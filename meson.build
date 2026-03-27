@@ -1,8 +1,13 @@
-project('dxmt', ['c', 'cpp'], version : 'v0.1', meson_version: '>=1.3.0', default_options : [ 
-  'cpp_std=c++20', 
-  'warning_level=2', 
+project('dxmt', ['c', 'cpp'], version : 'v0.1', meson_version: '>=1.3.0', default_options : [
+  'cpp_std=c++20',
+  'warning_level=2',
+  'werror=true',
   'build.cpp_std=c++20',
+  'buildtype=release',
+  'optimization=3',
   'b_ndebug=if-release',
+  'b_lto=true',
+  'b_lto_mode=thin',
 ])
 
 fs = import('fs')
@@ -135,6 +140,9 @@ dxmt_debug = get_option('dxmt_debug')
 
 if dxmt_debug
 add_project_arguments('-DDXMT_DEBUG=1', language: 'cpp')
+add_project_arguments('-DDXMT_PERF=1', language: 'cpp')
+elif get_option('dxmt_perf')
+add_project_arguments('-DDXMT_PERF=1', language: 'cpp')
 endif
 
 add_project_arguments('-DDXMT_PAGE_SIZE=4096', language: 'cpp')
@@ -182,7 +190,8 @@ if dxmt_crossbuild
     error('invalid cpu family')
   endif
 
-  unix_install_dir = cpu_family + '-unix'
+  # unix side is always 64-bit (x86 maps to x86_64 under wow64)
+  unix_install_dir = (cpu_family == 'x86' ? 'x86_64' : cpu_family) + '-unix'
 else
   wine_builtin_dll = false
   windows_native_install_dir = ''

@@ -4,7 +4,6 @@
  
 #include <cstdio>
 #define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #define UNICODE
 #include <windows.h>
 #include <d3d11_4.h>

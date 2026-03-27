@@ -21,7 +21,9 @@ union float4
         float3 xyz;
     };
 };
+#ifdef _MSC_VER
 #pragma warning(pop)
+#endif
 
 struct float3x3
 {

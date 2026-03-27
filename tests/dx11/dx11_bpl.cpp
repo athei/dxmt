@@ -1,6 +1,5 @@
 #include <cstddef>
 #define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #define UNICODE
 #include <windows.h>
 #include <d3d11_1.h>
@@ -15,8 +14,10 @@
 
 #include "ObjLoading.h"
 
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996) // disable warning that fopen() is unsafe
+#endif
 
 #include <assert.h>
 #include <math.h> //pow(), fabs(), sqrtf()
@@ -178,7 +179,7 @@ LoadedObj loadObj(const char *filename) {
   uint32_t numVertexPositions = 0;
   uint32_t numVertexTexCoords = 0;
   uint32_t numVertexNormals = 0;
-  uint32_t numFaces = 0;
+  [[maybe_unused]] uint32_t numFaces = 0;
   {
     const char *s = fileBytes;
     while (*s) {
@@ -328,7 +329,9 @@ void freeLoadedObj(LoadedObj loadedObj) {
   free(loadedObj.indexBuffer);
 }
 
+#ifdef _MSC_VER
 #pragma warning(pop)
+#endif
 
 static bool global_windowDidResize = false;
 
