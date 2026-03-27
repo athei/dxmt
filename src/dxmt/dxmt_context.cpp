@@ -813,8 +813,10 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       auto gpu_buffer_ = data->allocated_argbuf;
       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
       encoder.setVertexBuffer(gpu_buffer_, 0, 16);
+      encoder.setVertexBuffer(gpu_buffer_, 0, 17);
       encoder.setVertexBuffer(gpu_buffer_, 0, 29);
       encoder.setVertexBuffer(gpu_buffer_, 0, 30);
+      encoder.setFragmentBuffer(gpu_buffer_, 0, 18);
       encoder.setFragmentBuffer(gpu_buffer_, 0, 29);
       encoder.setFragmentBuffer(gpu_buffer_, 0, 30);
       if (data->use_geometry || data->use_tessellation) {

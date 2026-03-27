@@ -37,6 +37,19 @@ TextureView::TextureView(TextureAllocation *allocation, TextureViewKey key, Text
   );
 }
 
+TextureView::TextureView(TextureAllocation *allocation, TextureViewKey key, TextureViewDescriptor descriptor,
+                         WMTTextureSwizzleChannels swizzle) :
+    gpuResourceID(0),
+    allocation(allocation),
+    key(key) {
+  auto parent = allocation->texture();
+  texture = parent.newTextureView(
+      descriptor.format, descriptor.type, descriptor.firstMiplevel, descriptor.miplevelCount,
+      descriptor.firstArraySlice, descriptor.arraySize,
+      swizzle, gpuResourceID
+  );
+}
+
 TextureAllocation::TextureAllocation(
     Texture *descriptor, WMT::Reference<WMT::Buffer> &&buffer, void *mapped_buffer, const WMTTextureInfo &info,
     unsigned bytes_per_row, Flags<TextureAllocationFlag> flags
@@ -80,13 +93,33 @@ Texture::prepareAllocationViews(TextureAllocation *allocaiton) {
   }
   std::shared_lock<dxmt::shared_mutex> lock(mutex_);
   for (unsigned version = allocaiton->version_; version < version_; version++) {
-    allocaiton->cached_view_.push_back(new TextureView(allocaiton, version, viewDescriptors_[version]));
+    auto &swz = viewSwizzles_[version];
+    bool isIdentity = swz.r == WMTTextureSwizzleRed && swz.g == WMTTextureSwizzleGreen &&
+                      swz.b == WMTTextureSwizzleBlue && swz.a == WMTTextureSwizzleAlpha;
+    if (isIdentity) {
+      allocaiton->cached_view_.push_back(new TextureView(allocaiton, version, viewDescriptors_[version]));
+    } else {
+      allocaiton->cached_view_.push_back(new TextureView(allocaiton, version, viewDescriptors_[version], swz));
+    }
   }
   allocaiton->version_ = version_;
 }
 
+static constexpr WMTTextureSwizzleChannels kIdentitySwizzle = {
+  WMTTextureSwizzleRed, WMTTextureSwizzleGreen, WMTTextureSwizzleBlue, WMTTextureSwizzleAlpha
+};
+
+static bool swizzleEqual(const WMTTextureSwizzleChannels &a, const WMTTextureSwizzleChannels &b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
 TextureViewKey
 Texture::createView(TextureViewDescriptor const &descriptor) {
+  return createViewWithSwizzle(descriptor, kIdentitySwizzle);
+}
+
+TextureViewKey
+Texture::createViewWithSwizzle(TextureViewDescriptor const &descriptor, WMTTextureSwizzleChannels swizzle) {
   std::unique_lock<dxmt::shared_mutex> lock(mutex_);
   unsigned i = 0;
   for (; i < version_; i++) {
@@ -102,9 +135,12 @@ Texture::createView(TextureViewDescriptor const &descriptor) {
       continue;
     if (viewDescriptors_[i].arraySize != descriptor.arraySize)
       continue;
+    if (!swizzleEqual(viewSwizzles_[i], swizzle))
+      continue;
     return i;
   }
   viewDescriptors_.push_back(descriptor);
+  viewSwizzles_.push_back(swizzle);
   version_ = version_ + 1;
   return i;
 }
@@ -131,6 +167,7 @@ Texture::Texture(const WMTTextureInfo &descriptor, WMT::Device device) :
       .firstArraySlice = 0,
       .arraySize = arraySize,
   });
+  viewSwizzles_.push_back(kIdentitySwizzle);
   version_ = 1;
 }
 
@@ -154,6 +191,7 @@ Texture::Texture(
       .firstArraySlice = 0,
       .arraySize = 1,
   });
+  viewSwizzles_.push_back(kIdentitySwizzle);
   version_ = 1;
 }
 

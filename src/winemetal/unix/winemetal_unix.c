@@ -912,6 +912,11 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       [encoder setFragmentTexture:(id<MTLTexture>)body->texture atIndex:body->index];
       break;
     }
+    case WMTRenderCommandSetFragmentSamplerState: {
+      struct wmtcmd_render_setsamplerstate *body = (struct wmtcmd_render_setsamplerstate *)next;
+      [encoder setFragmentSamplerState:(id<MTLSamplerState>)body->sampler_state atIndex:body->index];
+      break;
+    }
     case WMTRenderCommandSetRasterizerState: {
       struct wmtcmd_render_setrasterizerstate *body = (struct wmtcmd_render_setrasterizerstate *)next;
       [encoder setTriangleFillMode:(MTLTriangleFillMode)body->fill_mode];
@@ -1742,6 +1747,93 @@ thunk_SM50GetArgumentsInfo(void *args) {
   return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+thunk_DXSOInitialize(void *args) {
+  struct dxso_initialize_params *params = args;
+  params->ret = DXSOInitialize(params->bytecode, params->bytecode_size, params->shader, params->error);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSODestroy(void *args) {
+  struct dxso_destroy_params *params = args;
+  DXSODestroy(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOCompile(void *args) {
+  struct dxso_compile_params *params = args;
+  params->ret = DXSOCompile(params->shader, params->args, params->func_name, params->bitcode, params->error);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetInputDeclCount(void *args) {
+  struct dxso_get_input_decl_count_params *params = args;
+  params->ret = DXSOGetInputDeclCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetInputDecls(void *args) {
+  struct dxso_get_input_decls_params *params = args;
+  DXSOGetInputDecls(params->shader, params->decls);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetPSMaxTexcoordCount(void *args) {
+  struct dxso_get_ps_max_texcoord_count_params *params = args;
+  params->ret = DXSOGetPSMaxTexcoordCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetVSHasFogOutput(void *args) {
+  struct dxso_get_vs_has_fog_output_params *params = args;
+  params->ret = DXSOGetVSHasFogOutput(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetSamplerDeclCount(void *args) {
+  struct dxso_get_sampler_decl_count_params *params = args;
+  params->ret = DXSOGetSamplerDeclCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetSamplerDecls(void *args) {
+  struct dxso_get_sampler_decls_params *params = args;
+  DXSOGetSamplerDecls(params->shader, params->decls);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_DXSOGetMaxConstantRegister(void *args) {
+  struct dxso_get_max_constant_register_params *params = args;
+  params->ret = DXSOGetMaxConstantRegister(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_D3D9FFCompileVS(void *args) {
+  struct d3d9_ff_compile_vs_params *params = args;
+  params->ret = D3D9FFCompileVS(params->key, params->elements,
+    params->num_elements, params->slot_mask,
+    params->func_name, params->args, params->bitcode, params->error);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk_D3D9FFCompilePS(void *args) {
+  struct d3d9_ff_compile_ps_params *params = args;
+  params->ret = D3D9FFCompilePS(params->key, params->texcoord_count,
+    params->func_name, params->args, params->bitcode, params->error);
+  return STATUS_SUCCESS;
+}
+
 static inline void *
 UInt32ToPtr(uint32_t v) {
   return (void *)(uint64_t)v;
@@ -1819,6 +1911,18 @@ struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   uint32_t max_potential_tess_factor;
+};
+
+struct SM50_SHADER_DXSO_ALPHA_TEST_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint8_t alpha_test_func;
+};
+
+struct SM50_SHADER_DXSO_FOG_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint8_t fog_mode;
 };
 
 void
@@ -1914,6 +2018,26 @@ sm50_compilation_argument32_convert(
       last_arg->next = NULL;
       data->type = src->type;
       data->max_potential_tess_factor = src->max_potential_tess_factor;
+      break;
+    }
+    case SM50_SHADER_DXSO_ALPHA_TEST: {
+      struct SM50_SHADER_DXSO_ALPHA_TEST_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_DXSO_ALPHA_TEST_DATA *data = malloc(sizeof(struct SM50_SHADER_DXSO_ALPHA_TEST_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->alpha_test_func = src->alpha_test_func;
+      break;
+    }
+    case SM50_SHADER_DXSO_FOG: {
+      struct SM50_SHADER_DXSO_FOG_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_DXSO_FOG_DATA *data = malloc(sizeof(struct SM50_SHADER_DXSO_FOG_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->fog_mode = src->fog_mode;
       break;
     }
     case SM50_SHADER_ARGUMENT_TYPE_MAX:
@@ -2043,6 +2167,114 @@ thunk32_SM50GetArgumentsInfo(void *args) {
 
   SM50GetArgumentsInfo(params->shader, UInt32ToPtr(params->constant_buffers), UInt32ToPtr(params->arguments));
 
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOInitialize(void *args) {
+  struct dxso_initialize_params32 *params = args;
+  params->ret = DXSOInitialize(
+      UInt32ToPtr(params->bytecode), params->bytecode_size,
+      UInt32ToPtr(params->shader), UInt32ToPtr(params->error)
+  );
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOCompile(void *args) {
+  struct dxso_compile_params32 *params = args;
+
+  // Convert 32-bit args chain to 64-bit
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA first_arg;
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA32 *args32 = UInt32ToPtr(params->args);
+  sm50_compilation_argument32_convert(&first_arg, args32);
+
+  params->ret = DXSOCompile(
+      params->shader, &first_arg, UInt32ToPtr(params->func_name),
+      UInt32ToPtr(params->bitcode), UInt32ToPtr(params->error)
+  );
+
+  sm50_compilation_argument32_free(&first_arg);
+
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetInputDeclCount(void *args) {
+  struct dxso_get_input_decl_count_params *params = args;
+  params->ret = DXSOGetInputDeclCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetInputDecls(void *args) {
+  struct dxso_get_input_decls_params32 *params = args;
+  DXSOGetInputDecls(params->shader, UInt32ToPtr(params->decls));
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetPSMaxTexcoordCount(void *args) {
+  struct dxso_get_ps_max_texcoord_count_params *params = args;
+  params->ret = DXSOGetPSMaxTexcoordCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetVSHasFogOutput(void *args) {
+  struct dxso_get_vs_has_fog_output_params *params = args;
+  params->ret = DXSOGetVSHasFogOutput(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetSamplerDeclCount(void *args) {
+  struct dxso_get_sampler_decl_count_params *params = args;
+  params->ret = DXSOGetSamplerDeclCount(params->shader);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_DXSOGetSamplerDecls(void *args) {
+  struct dxso_get_sampler_decls_params32 *params = args;
+  DXSOGetSamplerDecls(params->shader, UInt32ToPtr(params->decls));
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_D3D9FFCompileVS(void *args) {
+  struct d3d9_ff_compile_vs_params32 *params = args;
+
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA first_arg;
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA32 *args32 = UInt32ToPtr(params->args);
+  sm50_compilation_argument32_convert(&first_arg, args32);
+
+  params->ret = D3D9FFCompileVS(
+      UInt32ToPtr(params->key), UInt32ToPtr(params->elements),
+      params->num_elements, params->slot_mask,
+      UInt32ToPtr(params->func_name), &first_arg,
+      UInt32ToPtr(params->bitcode), UInt32ToPtr(params->error)
+  );
+
+  sm50_compilation_argument32_free(&first_arg);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_D3D9FFCompilePS(void *args) {
+  struct d3d9_ff_compile_ps_params32 *params = args;
+
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA first_arg;
+  struct SM50_SHADER_COMPILATION_ARGUMENT_DATA32 *args32 = UInt32ToPtr(params->args);
+  sm50_compilation_argument32_convert(&first_arg, args32);
+
+  params->ret = D3D9FFCompilePS(
+      UInt32ToPtr(params->key), params->texcoord_count,
+      UInt32ToPtr(params->func_name), &first_arg,
+      UInt32ToPtr(params->bitcode), UInt32ToPtr(params->error)
+  );
+
+  sm50_compilation_argument32_free(&first_arg);
   return STATUS_SUCCESS;
 }
 #endif /* DXMT_NATIVE */
@@ -2633,12 +2865,12 @@ _MTLSharedEvent_createMachPort(void *obj) {
   id<MTLSharedEvent> event = (id<MTLSharedEvent>)params->event;
   MTLSharedEventHandle *handle = [event newSharedEventHandle];
   mach_port_t port = [handle eventPort];
-  
+
   // The eventPort method returns a send right that's owned by the handle.
   // We need to add our own send right since we're keeping the port but releasing the handle.
   // This increments the send right count so the port remains valid.
   mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_SEND, 1);
-  
+
   params->ret_mach_port = port;
   [handle release];
   return STATUS_SUCCESS;
@@ -2756,6 +2988,8 @@ _MTLCommandBuffer_property(void *obj) {
 
 NTSTATUS _CacheReader_alloc_init(void *obj);
 NTSTATUS _CacheReader_get(void *obj);
+NTSTATUS _CacheReader_preload(void *obj);
+NTSTATUS _CacheReader_getPreloaded(void *obj);
 NTSTATUS _CacheWriter_alloc_init(void *obj);
 NTSTATUS _CacheWriter_set(void *obj);
 NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
@@ -2892,6 +3126,20 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLCounterSampleBuffer_resolveCounterRange,
     &_MTLCommandBuffer_blitCommandEncoderWithSampleBuffers,
     &_MTLCommandBuffer_property,
+    &thunk_DXSOInitialize,
+    &thunk_DXSODestroy,
+    &thunk_DXSOCompile,
+    &thunk_D3D9FFCompileVS,
+    &thunk_D3D9FFCompilePS,
+    &thunk_DXSOGetInputDeclCount,
+    &thunk_DXSOGetInputDecls,
+    &thunk_DXSOGetPSMaxTexcoordCount,
+    &thunk_DXSOGetVSHasFogOutput,
+    &thunk_DXSOGetSamplerDeclCount,
+    &thunk_DXSOGetSamplerDecls,
+    &thunk_DXSOGetMaxConstantRegister,
+    &_CacheReader_preload,
+    &_CacheReader_getPreloaded,
 };
 
 #ifndef DXMT_NATIVE
@@ -3027,5 +3275,19 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLCounterSampleBuffer_resolveCounterRange,
     &_MTLCommandBuffer_blitCommandEncoderWithSampleBuffers,
     &_MTLCommandBuffer_property,
+    &thunk32_DXSOInitialize,
+    &thunk_DXSODestroy,
+    &thunk32_DXSOCompile,
+    &thunk32_D3D9FFCompileVS,
+    &thunk32_D3D9FFCompilePS,
+    &thunk32_DXSOGetInputDeclCount,
+    &thunk32_DXSOGetInputDecls,
+    &thunk32_DXSOGetPSMaxTexcoordCount,
+    &thunk32_DXSOGetVSHasFogOutput,
+    &thunk32_DXSOGetSamplerDeclCount,
+    &thunk32_DXSOGetSamplerDecls,
+    &thunk_DXSOGetMaxConstantRegister,
+    &_CacheReader_preload,
+    &_CacheReader_getPreloaded,
 };
 #endif

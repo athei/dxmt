@@ -168,3 +168,153 @@ AIRCONV_API void SM50GetArgumentsInfo(
   params.arguments = pArguments;
   UNIX_CALL(sm50_get_arguments_info, &params);
 };
+
+AIRCONV_API int
+DXSOInitialize(
+    const void *pBytecode, size_t BytecodeSize, dxso_shader_t *ppShader,
+    sm50_error_t *ppError
+) {
+  struct dxso_initialize_params params;
+  params.bytecode = pBytecode;
+  params.bytecode_size = BytecodeSize;
+  params.shader = ppShader;
+  params.error = ppError;
+  NTSTATUS status;
+  status = UNIX_CALL(dxso_initialize, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}
+
+AIRCONV_API void
+DXSODestroy(dxso_shader_t pShader) {
+  struct dxso_destroy_params params;
+  params.shader = pShader;
+  UNIX_CALL(dxso_destroy, &params);
+}
+
+AIRCONV_API int
+DXSOCompile(
+    dxso_shader_t pShader, struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, const char *FunctionName,
+    sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
+) {
+  struct dxso_compile_params params;
+  params.shader = (dxso_shader_t)pShader;
+  params.args = pArgs;
+  params.func_name = FunctionName;
+  params.bitcode = ppBitcode;
+  params.error = ppError;
+  NTSTATUS status;
+  status = UNIX_CALL(dxso_compile, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}
+
+AIRCONV_API uint32_t
+DXSOGetInputDeclCount(dxso_shader_t pShader) {
+  struct dxso_get_input_decl_count_params params;
+  params.shader = pShader;
+  params.ret = 0;
+  UNIX_CALL(dxso_get_input_decl_count, &params);
+  return params.ret;
+}
+
+AIRCONV_API void
+DXSOGetInputDecls(dxso_shader_t pShader, struct DXSO_INPUT_DECL *pDecls) {
+  struct dxso_get_input_decls_params params;
+  params.shader = pShader;
+  params.decls = pDecls;
+  UNIX_CALL(dxso_get_input_decls, &params);
+}
+
+AIRCONV_API uint32_t
+DXSOGetPSMaxTexcoordCount(dxso_shader_t pShader) {
+  struct dxso_get_ps_max_texcoord_count_params params;
+  params.shader = pShader;
+  params.ret = 0;
+  UNIX_CALL(dxso_get_ps_max_texcoord_count, &params);
+  return params.ret;
+}
+
+AIRCONV_API uint32_t
+DXSOGetVSHasFogOutput(dxso_shader_t pShader) {
+  struct dxso_get_vs_has_fog_output_params params;
+  params.shader = pShader;
+  params.ret = 0;
+  UNIX_CALL(dxso_get_vs_has_fog_output, &params);
+  return params.ret;
+}
+
+AIRCONV_API uint32_t
+DXSOGetSamplerDeclCount(dxso_shader_t pShader) {
+  struct dxso_get_sampler_decl_count_params params;
+  params.shader = pShader;
+  params.ret = 0;
+  UNIX_CALL(dxso_get_sampler_decl_count, &params);
+  return params.ret;
+}
+
+AIRCONV_API void
+DXSOGetSamplerDecls(dxso_shader_t pShader, struct DXSO_SAMPLER_DECL *pDecls) {
+  struct dxso_get_sampler_decls_params params;
+  params.shader = pShader;
+  params.decls = pDecls;
+  UNIX_CALL(dxso_get_sampler_decls, &params);
+}
+
+AIRCONV_API uint32_t
+DXSOGetMaxConstantRegister(dxso_shader_t pShader) {
+  struct dxso_get_max_constant_register_params params;
+  params.shader = pShader;
+  params.ret = 256;
+  UNIX_CALL(dxso_get_max_constant_register, &params);
+  return params.ret;
+}
+
+AIRCONV_API int
+D3D9FFCompileVS(
+    const struct D3D9_FF_VS_KEY *pKey,
+    const struct D3D9_FF_VS_ELEMENT *pElements,
+    uint32_t numElements, uint32_t slotMask,
+    const char *FunctionName,
+    struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,
+    sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
+) {
+  struct d3d9_ff_compile_vs_params params;
+  params.key = pKey;
+  params.elements = pElements;
+  params.num_elements = numElements;
+  params.slot_mask = slotMask;
+  params.func_name = FunctionName;
+  params.args = pArgs;
+  params.bitcode = ppBitcode;
+  params.error = ppError;
+  NTSTATUS status;
+  status = UNIX_CALL(d3d9_ff_compile_vs, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}
+
+AIRCONV_API int
+D3D9FFCompilePS(
+    const struct D3D9_FF_PS_KEY *pKey,
+    uint8_t texcoordCount,
+    const char *FunctionName,
+    struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,
+    sm50_bitcode_t *ppBitcode, sm50_error_t *ppError
+) {
+  struct d3d9_ff_compile_ps_params params;
+  params.key = pKey;
+  params.texcoord_count = texcoordCount;
+  params.func_name = FunctionName;
+  params.args = pArgs;
+  params.bitcode = ppBitcode;
+  params.error = ppError;
+  NTSTATUS status;
+  status = UNIX_CALL(d3d9_ff_compile_ps, &params);
+  if (status)
+    return -1;
+  return params.ret;
+}
