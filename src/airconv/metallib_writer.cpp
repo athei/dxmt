@@ -62,7 +62,7 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         });
         function_def_stream << value(MTLB_VERS_TAG{
           .airVersionMajor = 2,
-          .airVersionMinor = 6,
+          .airVersionMinor = 8,
           .languageVersionMajor = 3,
           .languageVersionMinor = 1,
         });
@@ -181,7 +181,7 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         });
         function_def_stream << value(MTLB_VERS_TAG{
           .airVersionMajor = 2,
-          .airVersionMinor = 6,
+          .airVersionMinor = 8,
           .languageVersionMajor = 3,
           .languageVersionMinor = 1,
         });
@@ -215,7 +215,7 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         });
         function_def_stream << value(MTLB_VERS_TAG{
           .airVersionMajor = 2,
-          .airVersionMinor = 6,
+          .airVersionMinor = 8,
           .languageVersionMajor = 3,
           .languageVersionMinor = 1,
         });
@@ -309,7 +309,7 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         });
         function_def_stream << value(MTLB_VERS_TAG{
           .airVersionMajor = 2,
-          .airVersionMinor = 6,
+          .airVersionMinor = 8,
           .languageVersionMajor = 3,
           .languageVersionMinor = 1,
         });
@@ -350,7 +350,7 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
         });
         function_def_stream << value(MTLB_VERS_TAG{
           .airVersionMajor = 2,
-          .airVersionMinor = 6,
+          .airVersionMinor = 8,
           .languageVersionMajor = 3,
           .languageVersionMinor = 1,
         });
@@ -393,10 +393,10 @@ void MetallibWriter::Write(const llvm::Module &module, raw_ostream &OS) {
   header.Type = FileType::MTLBType_Executable; // executable
   header.Platform = Platform::MTLBPlatform_macOS;
   header.VersionMajor = 2;
-  header.VersionMinor = 7;
+  header.VersionMinor = 9;
   header.OS = OS::MTLBOS_macOS;
-  header.OSVersionMajor = 14;
-  header.OSVersionMinor = 4;
+  header.OSVersionMajor = 26;
+  header.OSVersionMinor = 0;
 
   // write to stream
   OS << value(header);

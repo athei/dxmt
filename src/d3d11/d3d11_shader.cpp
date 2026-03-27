@@ -2,6 +2,7 @@
 #include "Metal.hpp"
 #include "airconv_public.h"
 #include "d3d11_input_layout.hpp"
+#include "dxmt_shader_cache.hpp"
 #include "sha1/sha1_util.hpp"
 
 namespace dxmt {
@@ -30,6 +31,7 @@ public:
 
   ThreadpoolWork *
   RunThreadpoolWork() {
+    auto start_ns = ShaderCache::nowNs();
     auto pool = WMT::MakeAutoreleasePool();
     WMT::Reference<WMT::Error> err;
     WMT::Reference<WMT::DispatchData> lib_data = shader_->find_cached_variant(variant_digest_);
@@ -80,6 +82,8 @@ public:
         shader_->dump();
       }
     }
+
+    ShaderCache::recordShader(start_ns);
 
     return this;
   }

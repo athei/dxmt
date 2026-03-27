@@ -16,13 +16,13 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/AggressiveInstCombine/AggressiveInstCombine.h"
 #include "llvm/Transforms/IPO/DeadArgumentElimination.h"
 #include "llvm/Transforms/IPO/GlobalOpt.h"
 #include "llvm/Transforms/IPO/SCCP.h"
 #include "llvm/Transforms/IPO/Annotation2Metadata.h"
 #include "llvm/Transforms/IPO/ForceFunctionAttrs.h"
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
-#include "llvm/Transforms/Utils/Mem2Reg.h"
 
 #include "airconv_context.hpp"
 
@@ -38,14 +38,14 @@ namespace dxmt {
 
 void initializeModule(llvm::Module &M) {
   M.setSourceFileName("airconv_generated.metal");
-  M.setTargetTriple("air64-apple-macosx14.0.0");
+  M.setTargetTriple("air64_v28-apple-macosx26.0.0");
   M.setDataLayout(
     "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:"
     "64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-"
     "v128:128:128-v192:256:256-v256:256:256-v512:512:512-v1024:1024:1024-n8:"
     "16:32"
   );
-  M.setSDKVersion(VersionTuple(15, 0));
+  M.setSDKVersion(VersionTuple(26, 2));
   M.addModuleFlag(Module::ModFlagBehavior::Error, "wchar_size", 4);
   M.addModuleFlag(Module::ModFlagBehavior::Max, "frame-pointer", 2);
   M.addModuleFlag(Module::ModFlagBehavior::Max, "air.max_device_buffers", 31);
@@ -131,20 +131,29 @@ runOptimizationPasses(llvm::Module &M) {
   MPM.addPass(AlwaysInlinerPass());
   MPM.addPass(IPSCCPPass());
   MPM.addPass(GlobalOptPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(PromotePass()));
   MPM.addPass(DeadArgumentEliminationPass());
 
   {
-    // Create a small function pass pipeline to cleanup after all the global
-    // optimizations.
+    // Post-inline cleanup: SROA subsumes Mem2Reg and decomposes aggregate
+    // allocas introduced by inlined code into individual SSA values.
+    FunctionPassManager PostInlineFPM;
+    PostInlineFPM.addPass(SROAPass());
+    PostInlineFPM.addPass(InstCombinePass());
+    PostInlineFPM.addPass(EarlyCSEPass());
+    PostInlineFPM.addPass(SimplifyCFGPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(PostInlineFPM), true));
+  }
+
+  {
     FunctionPassManager GlobalCleanupPM;
     GlobalCleanupPM.addPass(InstCombinePass());
+    GlobalCleanupPM.addPass(AggressiveInstCombinePass());
 
     GlobalCleanupPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
 
     GlobalCleanupPM.addPass(air::Lower16BitTexReadPass());
 
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM), true /* ? */));
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM), true));
   }
 
   // MPM.addPass(VerifierPass());

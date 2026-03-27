@@ -56,6 +56,23 @@ struct FrameStatistics {
   clock::duration present_lantency_interval{};
   ScalerInfo last_scaler_info{};
 
+  // D3D9 main-thread profiling (written only when DXMT_DEBUG is defined)
+  uint32_t d3d9_draw_count = 0;
+  uint32_t d3d9_draw_up_count = 0;
+  uint32_t d3d9_batch_flush_count = 0;
+  uint32_t d3d9_state_change_count = 0;
+  uint32_t d3d9_pso_miss_count = 0;
+  clock::duration d3d9_frame_time{};
+  clock::duration d3d9_build_capture_time{};
+  clock::duration d3d9_create_pso_time{};
+  clock::duration d3d9_flush_batch_time{};
+  clock::duration d3d9_lock_time{};
+  clock::duration d3d9_texture_upload_time{};
+  clock::duration d3d9_constant_snapshot_time{};
+  clock::duration d3d9_vb_capture_time{};
+  clock::duration d3d9_depth_state_time{};
+  clock::duration d3d9_texture_bind_time{};
+
   void
   reset() {
     compatibility_flags.clrAll();
@@ -77,6 +94,21 @@ struct FrameStatistics {
     drawable_blocking_interval = {};
     present_lantency_interval = {};
     last_scaler_info.type = {};
+    d3d9_draw_count = 0;
+    d3d9_draw_up_count = 0;
+    d3d9_batch_flush_count = 0;
+    d3d9_state_change_count = 0;
+    d3d9_pso_miss_count = 0;
+    d3d9_frame_time = {};
+    d3d9_build_capture_time = {};
+    d3d9_create_pso_time = {};
+    d3d9_flush_batch_time = {};
+    d3d9_lock_time = {};
+    d3d9_texture_upload_time = {};
+    d3d9_constant_snapshot_time = {};
+    d3d9_vb_capture_time = {};
+    d3d9_depth_state_time = {};
+    d3d9_texture_bind_time = {};
   };
 };
 
@@ -122,47 +154,136 @@ public:
     for(unsigned i = 0; i < kFrameStatisticsCount; i++) {
       if (i == current_frame)
         continue; // deliberately exclude current frame since it
-      min_.command_buffer_count = std::min(min_.command_buffer_count, frames_[i].command_buffer_count);
-      min_.sync_count = std::min(min_.sync_count, frames_[i].sync_count);
-      min_.event_stall = std::min(min_.sync_count, frames_[i].event_stall);
-      min_.commit_interval = std::min(min_.commit_interval, frames_[i].commit_interval);
-      min_.sync_interval = std::min(min_.sync_interval, frames_[i].sync_interval);
-      min_.encode_prepare_interval = std::min(min_.encode_prepare_interval, frames_[i].encode_prepare_interval);
-      min_.encode_flush_interval = std::min(min_.encode_flush_interval, frames_[i].encode_flush_interval);
-      min_.drawable_blocking_interval =
-          std::min(min_.drawable_blocking_interval, frames_[i].drawable_blocking_interval);
-      min_.present_lantency_interval = std::min(min_.present_lantency_interval, frames_[i].present_lantency_interval);
 
-      max_.command_buffer_count = std::max(max_.command_buffer_count, frames_[i].command_buffer_count);
-      max_.sync_count = std::max(max_.sync_count, frames_[i].sync_count);
-      max_.event_stall = std::max(max_.event_stall, frames_[i].event_stall);
-      max_.commit_interval = std::max(max_.commit_interval, frames_[i].commit_interval);
-      max_.sync_interval = std::max(max_.sync_interval, frames_[i].sync_interval);
-      max_.encode_prepare_interval = std::max(max_.encode_prepare_interval, frames_[i].encode_prepare_interval);
-      max_.encode_flush_interval = std::max(max_.encode_flush_interval, frames_[i].encode_flush_interval);
-      max_.drawable_blocking_interval =
-          std::max(max_.drawable_blocking_interval, frames_[i].drawable_blocking_interval);
-      max_.present_lantency_interval = std::max(max_.present_lantency_interval, frames_[i].present_lantency_interval);
+#define STATS_MIN(field) min_.field = std::min(min_.field, frames_[i].field)
+#define STATS_MAX(field) max_.field = std::max(max_.field, frames_[i].field)
+#define STATS_SUM(field) average_.field += frames_[i].field
 
-      average_.command_buffer_count += frames_[i].command_buffer_count;
-      average_.sync_count += frames_[i].sync_count;
-      average_.event_stall += frames_[i].event_stall;
-      average_.commit_interval += frames_[i].commit_interval;
-      average_.sync_interval += frames_[i].sync_interval;
-      average_.encode_prepare_interval += frames_[i].encode_prepare_interval;
-      average_.encode_flush_interval += frames_[i].encode_flush_interval;
-      average_.drawable_blocking_interval += frames_[i].drawable_blocking_interval;
-      average_.present_lantency_interval += frames_[i].present_lantency_interval;
+      STATS_MIN(command_buffer_count);
+      STATS_MIN(sync_count);
+      STATS_MIN(event_stall);
+      STATS_MIN(render_pass_count);
+      STATS_MIN(render_pass_optimized);
+      STATS_MIN(clear_pass_count);
+      STATS_MIN(clear_pass_optimized);
+      STATS_MIN(commit_interval);
+      STATS_MIN(sync_interval);
+      STATS_MIN(encode_prepare_interval);
+      STATS_MIN(encode_flush_interval);
+      STATS_MIN(drawable_blocking_interval);
+      STATS_MIN(present_lantency_interval);
+      STATS_MIN(d3d9_draw_count);
+      STATS_MIN(d3d9_draw_up_count);
+      STATS_MIN(d3d9_batch_flush_count);
+      STATS_MIN(d3d9_state_change_count);
+      STATS_MIN(d3d9_pso_miss_count);
+      STATS_MIN(d3d9_frame_time);
+      STATS_MIN(d3d9_build_capture_time);
+      STATS_MIN(d3d9_create_pso_time);
+      STATS_MIN(d3d9_flush_batch_time);
+      STATS_MIN(d3d9_lock_time);
+      STATS_MIN(d3d9_texture_upload_time);
+      STATS_MIN(d3d9_constant_snapshot_time);
+      STATS_MIN(d3d9_vb_capture_time);
+      STATS_MIN(d3d9_depth_state_time);
+      STATS_MIN(d3d9_texture_bind_time);
+
+      STATS_MAX(command_buffer_count);
+      STATS_MAX(sync_count);
+      STATS_MAX(event_stall);
+      STATS_MAX(render_pass_count);
+      STATS_MAX(render_pass_optimized);
+      STATS_MAX(clear_pass_count);
+      STATS_MAX(clear_pass_optimized);
+      STATS_MAX(commit_interval);
+      STATS_MAX(sync_interval);
+      STATS_MAX(encode_prepare_interval);
+      STATS_MAX(encode_flush_interval);
+      STATS_MAX(drawable_blocking_interval);
+      STATS_MAX(present_lantency_interval);
+      STATS_MAX(d3d9_draw_count);
+      STATS_MAX(d3d9_draw_up_count);
+      STATS_MAX(d3d9_batch_flush_count);
+      STATS_MAX(d3d9_state_change_count);
+      STATS_MAX(d3d9_pso_miss_count);
+      STATS_MAX(d3d9_frame_time);
+      STATS_MAX(d3d9_build_capture_time);
+      STATS_MAX(d3d9_create_pso_time);
+      STATS_MAX(d3d9_flush_batch_time);
+      STATS_MAX(d3d9_lock_time);
+      STATS_MAX(d3d9_texture_upload_time);
+      STATS_MAX(d3d9_constant_snapshot_time);
+      STATS_MAX(d3d9_vb_capture_time);
+      STATS_MAX(d3d9_depth_state_time);
+      STATS_MAX(d3d9_texture_bind_time);
+
+      STATS_SUM(command_buffer_count);
+      STATS_SUM(sync_count);
+      STATS_SUM(event_stall);
+      STATS_SUM(render_pass_count);
+      STATS_SUM(render_pass_optimized);
+      STATS_SUM(clear_pass_count);
+      STATS_SUM(clear_pass_optimized);
+      STATS_SUM(commit_interval);
+      STATS_SUM(sync_interval);
+      STATS_SUM(encode_prepare_interval);
+      STATS_SUM(encode_flush_interval);
+      STATS_SUM(drawable_blocking_interval);
+      STATS_SUM(present_lantency_interval);
+      STATS_SUM(d3d9_draw_count);
+      STATS_SUM(d3d9_draw_up_count);
+      STATS_SUM(d3d9_batch_flush_count);
+      STATS_SUM(d3d9_state_change_count);
+      STATS_SUM(d3d9_pso_miss_count);
+      STATS_SUM(d3d9_frame_time);
+      STATS_SUM(d3d9_build_capture_time);
+      STATS_SUM(d3d9_create_pso_time);
+      STATS_SUM(d3d9_flush_batch_time);
+      STATS_SUM(d3d9_lock_time);
+      STATS_SUM(d3d9_texture_upload_time);
+      STATS_SUM(d3d9_constant_snapshot_time);
+      STATS_SUM(d3d9_vb_capture_time);
+      STATS_SUM(d3d9_depth_state_time);
+      STATS_SUM(d3d9_texture_bind_time);
+
+#undef STATS_MIN
+#undef STATS_MAX
+#undef STATS_SUM
     }
-    average_.command_buffer_count /= (kFrameStatisticsCount - 1);
-    average_.sync_count /= (kFrameStatisticsCount - 1);
-    average_.event_stall /= (kFrameStatisticsCount - 1);
-    average_.commit_interval /= (kFrameStatisticsCount - 1);
-    average_.sync_interval /= (kFrameStatisticsCount - 1);
-    average_.encode_prepare_interval /= (kFrameStatisticsCount - 1);
-    average_.encode_flush_interval /= (kFrameStatisticsCount - 1);
-    average_.drawable_blocking_interval /= (kFrameStatisticsCount - 1);
-    average_.present_lantency_interval /= (kFrameStatisticsCount - 1);
+    constexpr auto N = kFrameStatisticsCount - 1;
+
+#define STATS_AVG(field) average_.field /= N
+
+    STATS_AVG(command_buffer_count);
+    STATS_AVG(sync_count);
+    STATS_AVG(event_stall);
+    STATS_AVG(render_pass_count);
+    STATS_AVG(render_pass_optimized);
+    STATS_AVG(clear_pass_count);
+    STATS_AVG(clear_pass_optimized);
+    STATS_AVG(commit_interval);
+    STATS_AVG(sync_interval);
+    STATS_AVG(encode_prepare_interval);
+    STATS_AVG(encode_flush_interval);
+    STATS_AVG(drawable_blocking_interval);
+    STATS_AVG(present_lantency_interval);
+    STATS_AVG(d3d9_draw_count);
+    STATS_AVG(d3d9_draw_up_count);
+    STATS_AVG(d3d9_batch_flush_count);
+    STATS_AVG(d3d9_state_change_count);
+    STATS_AVG(d3d9_pso_miss_count);
+    STATS_AVG(d3d9_frame_time);
+    STATS_AVG(d3d9_build_capture_time);
+    STATS_AVG(d3d9_create_pso_time);
+    STATS_AVG(d3d9_flush_batch_time);
+    STATS_AVG(d3d9_lock_time);
+    STATS_AVG(d3d9_texture_upload_time);
+    STATS_AVG(d3d9_constant_snapshot_time);
+    STATS_AVG(d3d9_vb_capture_time);
+    STATS_AVG(d3d9_depth_state_time);
+    STATS_AVG(d3d9_texture_bind_time);
+
+#undef STATS_AVG
   };
 };
 

@@ -10,6 +10,8 @@ airconv_src = files([
  'dxbc_converter_cfg.cpp',
  'dxbc_instructions.cpp',
  'dxbc_signature.cpp',
+ 'dxso_compiler.cpp',
+ 'd3d9_ff_shader.cpp',
  'metallib_writer.cpp',
  'nt/air_builder.cpp',
  'nt/dxbc_converter_base.cpp',
@@ -36,6 +38,8 @@ llvm_deps = [
 
 airconv_args = [
   '-Wno-extern-c-compat',
+  '-Wno-unnecessary-virtual-specifier', # LLVM 15 headers
+  '-Wno-nontrivial-memcall',            # DXBCParser third-party lib
   # LLVM
   '-fno-exceptions',
   '-funwind-tables',
@@ -62,7 +66,7 @@ airconv_shaders = [
 
 airconv_shaders_ir = metalir_generator.process(
   airconv_shaders,
-  extra_args: ['-std=metal3.1', '--target=air64-apple-macos14.0'],
+  extra_args: ['-std=metal3.1', '--target=air64_v28-apple-macos26.0'],
 )
 airconv_shaders_header = hexdump_generator.process(airconv_shaders_ir)
 
@@ -98,6 +102,4 @@ executable('airconv', airconv_src + airconv_cli_src,
 
 endif
 
-if cpu_family == 'x86_64' or cpu_family == 'aarch64' or not dxmt_crossbuild
-  subdir('darwin')
-endif
+subdir('darwin')
