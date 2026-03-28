@@ -2328,6 +2328,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
         snap->ps[254][2] = fogDensity;
       }
     } else {
+      UpdateFFConstants();
       memcpy(snap->ps, cached_ff_ps_, 3 * 4 * sizeof(float));
     }
     snapshot_vs_version_ = cap.vs_const_version;
