@@ -322,8 +322,21 @@ public:
 
   HRESULT STDMETHODCALLTYPE EnumWarpAdapter(REFIID iid,
                                             void **adapter) override {
-    ERR("DXGIFactory::EnumWrapAdapter: not implemented");
-    return DXGI_ERROR_NOT_FOUND;
+    InitReturnPtr(adapter);
+
+    if (adapter == nullptr)
+      return DXGI_ERROR_INVALID_CALL;
+
+    // There is no software rasterizer. Callers expect an adapter on success,
+    // so hand out the hardware one, as DXVK and Wine's DXGI do.
+    WARN("DXGIFactory::EnumWarpAdapter: WARP not supported, returning the hardware adapter");
+
+    Com<IDXGIAdapter1> hardware_adapter;
+    HRESULT hr = this->EnumAdapters1(0, &hardware_adapter);
+    if (FAILED(hr))
+      return hr;
+
+    return hardware_adapter->QueryInterface(iid, adapter);
   };
 
   HRESULT STDMETHODCALLTYPE
