@@ -302,18 +302,22 @@ public:
                                               void **ppAdapter) override {
     InitReturnPtr(ppAdapter);
 
-    // luid ignored, since Apple Silicon has only 1 GPU anyway
+    if (ppAdapter == nullptr)
+      return DXGI_ERROR_INVALID_CALL;
+
+    // Adapters report the LUIDs Wine gives its GPUs, the ones D3DKMT, DXCore
+    // and Vulkan report
     Com<IDXGIAdapter1> adapter;
-    HRESULT hr = this->EnumAdapters1(0, &adapter);
-    if (FAILED(hr))
-      return hr;
+    for (UINT i = 0; SUCCEEDED(this->EnumAdapters1(i, &adapter)); i++) {
+      DXGI_ADAPTER_DESC desc;
+      adapter->GetDesc(&desc);
+      if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart)
+        return adapter->QueryInterface(riid, ppAdapter);
+      adapter = nullptr;
+    }
 
-    DXGI_ADAPTER_DESC desc;
-    adapter->GetDesc(&desc);
-    if (desc.AdapterLuid.HighPart != luid.HighPart || desc.AdapterLuid.LowPart != luid.LowPart)
-      WARN("EnumAdapterByLuid: returning an adapter with mismatched luid");
-
-    return adapter->QueryInterface(riid, ppAdapter);
+    WARN("EnumAdapterByLuid: no adapter with LUID ", luid.HighPart, ":", luid.LowPart);
+    return DXGI_ERROR_NOT_FOUND;
   }
 
   HRESULT STDMETHODCALLTYPE EnumWarpAdapter(REFIID iid,

@@ -24,6 +24,7 @@
 #include "dxgi_interfaces.h"
 #include "dxmt_format.hpp"
 #include "log/log.hpp"
+#include "util_luid.hpp"
 #include <map>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
@@ -847,7 +848,11 @@ public:
 
   LUID *STDMETHODCALLTYPE
   GetAdapterLuid(LUID *ret) {
-    *ret = std::bit_cast<LUID>(__builtin_bswap64(adapter_->GetMTLDevice().registryID()));
+    // The LUID DXGI reports for the adapter
+    auto device = adapter_->GetMTLDevice();
+    WCHAR name[128] = {};
+    device.name().getCString((char *)name, sizeof(name) - sizeof(WCHAR), WMTUTF16StringEncoding);
+    *ret = GetMetalDeviceLuid(device.registryID(), name, WMT::CopyAllDevices().count());
     return ret;
   }
 

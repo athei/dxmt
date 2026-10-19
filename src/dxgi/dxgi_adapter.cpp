@@ -7,6 +7,7 @@
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
 #include "d3d10_1.h"
+#include "util_luid.hpp"
 #include "Metal.hpp"
 
 namespace dxmt {
@@ -18,17 +19,19 @@ const GUID kWineDXGIAdapterUUID = {0x17399d75,
 
 Com<IDXGIOutput> CreateOutput(IMTLDXGIAdapter *pAadapter, HMONITOR monitor, DxgiOptions &options);
 
-LUID GetAdapterLuid(WMT::Device device) {
-    // NOTE: use big-endian registryID, be consistent with MVK
-  return std::bit_cast<LUID>(__builtin_bswap64(device.registryID()));
+static LUID
+GetAdapterLuid(WMT::Device device) {
+  WCHAR name[128] = {};
+  device.name().getCString((char *)name, sizeof(name) - sizeof(WCHAR), WMTUTF16StringEncoding);
+  return GetMetalDeviceLuid(device.registryID(), name, WMT::CopyAllDevices().count());
 }
 
 class MTLDXGIAdapter : public MTLDXGIObject<IMTLDXGIAdapter> {
 public:
   MTLDXGIAdapter(WMT::Device device, IDXGIFactory *factory, Config &config)
-      : device_(device), factory_(factory), options_(config) {
+      : device_(device), luid_(GetAdapterLuid(device)), factory_(factory), options_(config) {
     D3DKMT_OPENADAPTERFROMLUID open = {};
-    open.AdapterLuid = GetAdapterLuid(device_);
+    open.AdapterLuid = luid_;
     if (D3DKMTOpenAdapterFromLuid(&open))
       WARN("Failed to open D3DKMT adapter");
     else
@@ -179,7 +182,7 @@ public:
       pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize();
     pDesc->DedicatedSystemMemory = 0;
     pDesc->SharedSystemMemory = 0;
-    pDesc->AdapterLuid = GetAdapterLuid(device_);
+    pDesc->AdapterLuid = luid_;
     pDesc->Flags = DXGI_ADAPTER_FLAG3_NONE;
     pDesc->GraphicsPreemptionGranularity = DXGI_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
     pDesc->ComputePreemptionGranularity = DXGI_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
@@ -282,6 +285,7 @@ public:
 
 private:
   WMT::Reference<WMT::Device> device_;
+  LUID luid_;
   D3DKMT_HANDLE local_kmt_ = 0;
   Com<IDXGIFactory> factory_;
   DxgiOptions options_;
