@@ -455,6 +455,13 @@ CreateMTLTextureDescriptorInternal(
     }
     break;
   case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+    // D3D11 has no 3D depth stencil textures, and Metal aborts on a 3D texture
+    // of a depth or stencil pixel format
+    if ((BindFlags & D3D11_BIND_DEPTH_STENCIL) ||
+        (metal_format.Flag & (MTL_DXGI_FORMAT_DEPTH_PLANER | MTL_DXGI_FORMAT_STENCIL_PLANER))) {
+      ERR("CreateMTLTextureDescriptorInternal: invalid depth stencil 3D texture of format ", Format);
+      return E_INVALIDARG;
+    }
     pDescOut->type = WMTTextureType3D;
     break;
   }
