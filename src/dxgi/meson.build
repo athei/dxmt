@@ -5,6 +5,7 @@ dxgi_src = [
   'dxgi_factory.cpp',
   'dxgi_output.cpp',
   'dxgi_options.cpp',
+  'dxgi_vk_swapchain.cpp',
   'dxgi.cpp',
 ]
 
