@@ -271,6 +271,8 @@ public:
 
   HRESULT STDMETHODCALLTYPE RegisterVideoMemoryBudgetChangeNotificationEvent(
       HANDLE event, DWORD *cookie) override {
+    if (!event || !cookie)
+      return DXGI_ERROR_INVALID_CALL;
     *cookie = 0;
     return S_OK;
   }
