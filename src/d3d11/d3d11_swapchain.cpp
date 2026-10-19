@@ -1104,6 +1104,30 @@ CreateSwapChain(
     return DXGI_ERROR_INVALID_CALL;
   InitReturnPtr(ppSwapChain);
 
+  // The back buffer format is checked as Windows does it, before the Metal
+  // layer, which aborts on formats it cannot display
+  if (pDesc->Format == DXGI_FORMAT_UNKNOWN) {
+    WARN("CreateSwapChain: DXGI_FORMAT_UNKNOWN back buffer format");
+    return E_INVALIDARG;
+  }
+  if (pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+      pDesc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD) {
+    switch (pDesc->Format) {
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+      break;
+    default:
+      WARN("CreateSwapChain: invalid format ", pDesc->Format, " for a flip swap effect");
+      return DXGI_ERROR_INVALID_CALL;
+    }
+  }
+  if (ConvertSwapChainFormat(pDesc->Format) == WMTPixelFormatInvalid) {
+    WARN("CreateSwapChain: unsupported back buffer format ", pDesc->Format);
+    return E_INVALIDARG;
+  }
+
   DWORD window_process_id;
   GetWindowThreadProcessId(hWnd, &window_process_id);
   if (GetProcessId(GetCurrentProcess()) != window_process_id) {
