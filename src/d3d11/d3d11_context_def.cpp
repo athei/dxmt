@@ -154,6 +154,9 @@ public:
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
       if (!pMappedResource)
         return E_INVALIDARG;
+      // default and immutable buffers have one for updates, but are not mappable
+      if (GetResourceCommon(pResource)->usage_ != D3D11_USAGE_DYNAMIC && !mapping_for_update_)
+        return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
       case D3D11_MAP_WRITE:

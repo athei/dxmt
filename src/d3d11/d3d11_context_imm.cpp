@@ -142,12 +142,21 @@ public:
 
     if (unlikely(!pResource))
       return E_INVALIDARG;
+    if (unlikely(Subresource >= GetSubresourceCount(pResource))) {
+      // Windows clears only the data pointer
+      if (pMappedResource)
+        pMappedResource->pData = nullptr;
+      return E_INVALIDARG;
+    }
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     auto current_seq_id = cmd_queue.CurrentSeqId();
     auto coherent_seq_id = cmd_queue.CoherentSeqId();
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
       if (!pMappedResource)
+        return E_INVALIDARG;
+      // default and immutable buffers have one for updates, but are not mappable
+      if (GetResourceCommon(pResource)->usage_ != D3D11_USAGE_DYNAMIC && !mapping_for_update_)
         return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
@@ -245,6 +254,12 @@ public:
       if (MapType > 3 || MapType == 0)
         return E_INVALIDARG;
 
+      // reading and writing need the CPU access the resource was created with
+      auto cpu_access = GetResourceCommon(pResource)->cpu_access_flags_;
+      if (((MapType & D3D11_MAP_READ) && !(cpu_access & D3D11_CPU_ACCESS_READ)) ||
+          ((MapType & D3D11_MAP_WRITE) && !(cpu_access & D3D11_CPU_ACCESS_WRITE)))
+        return E_INVALIDARG;
+
       if (ignore_map_flag_no_wait_)
         MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;
 
@@ -300,6 +315,8 @@ public:
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     if (unlikely(!pResource))
+      return;
+    if (unlikely(Subresource >= GetSubresourceCount(pResource)))
       return;
     UINT row_pitch = 0;
     UINT depth_pitch = 0;
