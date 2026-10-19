@@ -360,6 +360,11 @@ public:
       break;
     }
     default:
+      if (IsStreamOutputQuery(desc.Query)) {
+        WarnStreamOutputQuery();
+        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Begin();
+        break;
+      }
       ERR("Unknown query type ", desc.Query);
       break;
     }
@@ -417,6 +422,11 @@ public:
       break;
     }
     default:
+      if (IsStreamOutputQuery(desc.Query)) {
+        WarnStreamOutputQuery();
+        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->End();
+        break;
+      }
       ERR("Unknown query type ", desc.Query);
       break;
     }
@@ -493,6 +503,8 @@ public:
       return S_OK;
     }
     default:
+      if (IsStreamOutputQuery(desc.Query))
+        return static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->GetData(pData);
       ERR("Unknown query type ", desc.Query);
       return E_FAIL;
     }

@@ -7,6 +7,7 @@
 #include "sha1/sha1_util.hpp"
 #include "util_math.hpp"
 #include "log/log.hpp"
+#include "../d3d10/d3d10_shader.hpp"
 
 namespace dxmt {
 
@@ -78,8 +79,13 @@ HRESULT ExtractMTLInputLayoutElements(
   }
   for (UINT i = 0; i < num_parameters; i++) {
     auto &inputSig = pParameters[i];
-    if (inputSig.SystemValue != D3D10_SB_NAME_UNDEFINED) 
+    if (inputSig.SystemValue != D3D10_SB_NAME_UNDEFINED)
       continue; // ignore SIV & SGV
+    // The input assembler generates these, also for a signature that does not
+    // mark them as system values, such as a pixel shader's
+    if (strcasecmp(inputSig.SemanticName, "SV_VertexID") == 0 ||
+        strcasecmp(inputSig.SemanticName, "SV_InstanceID") == 0)
+      continue;
     if (!(register_mask & (1 << inputSig.Register))) {
       WARN("CreateInputLayout: Vertex shader expects ", inputSig.SemanticName,
            "_", inputSig.SemanticIndex, " but it's not in input layout element descriptors");
@@ -97,7 +103,7 @@ public:
   MTLD3D11StreamOutputLayout(MTLD3D11Device *device,
                              const MTL_STREAM_OUTPUT_DESC &desc)
       : ManagedDeviceChild<IMTLD3D11StreamOutputLayout>(device), desc_(desc),
-        null_gs(this) {
+        null_gs(this), d3d10_(this) {
     Sha1HashState h;
     h.update(desc.Strides);
     h.update(desc.RasterizedStream);
@@ -126,6 +132,12 @@ public:
 
     if (riid == __uuidof(IMTLD3D11Shader)) {
       *ppvObject = ref(&null_gs);
+      return S_OK;
+    }
+
+    // what the D3D10 device's CreateGeometryShaderWithStreamOutput returns
+    if (riid == __uuidof(ID3D10DeviceChild) || riid == __uuidof(ID3D10GeometryShader)) {
+      *ppvObject = ref(&d3d10_);
       return S_OK;
     }
 
@@ -173,6 +185,7 @@ private:
   };
 
   NullGeometryShader null_gs;
+  MTLD3D10GeometryShader d3d10_;
 };
 
 HRESULT ExtractMTLStreamOutputElements(

@@ -685,10 +685,14 @@ MTLD3D10Device::RSGetState(ID3D10RasterizerState **ppRasterizerState) {
 void STDMETHODCALLTYPE
 MTLD3D10Device::RSGetViewports(UINT *NumViewports, D3D10_VIEWPORT *pViewports) {
   D3D11_VIEWPORT vp[D3D10_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-  d3d11_context_->RSGetViewports(NumViewports, pViewports != nullptr ? vp : nullptr);
+  // the D3D11 call fills as many entries as asked for, which may be more
+  // than the temporary array holds; entries past it are zero
+  UINT requested = *NumViewports;
+  UINT count = std::min(requested, UINT(D3D10_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE));
+  d3d11_context_->RSGetViewports(&count, pViewports != nullptr ? vp : nullptr);
 
   if (pViewports != nullptr) {
-    for (unsigned i = 0; i < *NumViewports; i++) {
+    for (unsigned i = 0; i < count; i++) {
       pViewports[i].TopLeftX = int32_t(vp[i].TopLeftX);
       pViewports[i].TopLeftY = int32_t(vp[i].TopLeftY);
       pViewports[i].Width = uint32_t(vp[i].Width);
@@ -696,7 +700,10 @@ MTLD3D10Device::RSGetViewports(UINT *NumViewports, D3D10_VIEWPORT *pViewports) {
       pViewports[i].MinDepth = vp[i].MinDepth;
       pViewports[i].MaxDepth = vp[i].MaxDepth;
     }
+    for (unsigned i = count; i < requested; i++)
+      pViewports[i] = {};
   }
+  *NumViewports = count;
 }
 
 void STDMETHODCALLTYPE
@@ -1083,22 +1090,22 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D10Device::CreateBlendState(const D3D10_BLEND_DESC *pBlendStateDesc, ID3D10BlendState **ppBlendState) {
   InitReturnPtr(ppBlendState);
 
+  if (!pBlendStateDesc)
+    return E_INVALIDARG;
+
   D3D11_BLEND_DESC d3d11_desc;
+  d3d11_desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
+  d3d11_desc.IndependentBlendEnable = TRUE;
 
-  if (pBlendStateDesc != nullptr) {
-    d3d11_desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
-    d3d11_desc.IndependentBlendEnable = TRUE;
-
-    for (unsigned i = 0; i < 8; i++) {
-      d3d11_desc.RenderTarget[i].BlendEnable = pBlendStateDesc->BlendEnable[i];
-      d3d11_desc.RenderTarget[i].SrcBlend = D3D11_BLEND(pBlendStateDesc->SrcBlend);
-      d3d11_desc.RenderTarget[i].DestBlend = D3D11_BLEND(pBlendStateDesc->DestBlend);
-      d3d11_desc.RenderTarget[i].BlendOp = D3D11_BLEND_OP(pBlendStateDesc->BlendOp);
-      d3d11_desc.RenderTarget[i].SrcBlendAlpha = D3D11_BLEND(pBlendStateDesc->SrcBlendAlpha);
-      d3d11_desc.RenderTarget[i].DestBlendAlpha = D3D11_BLEND(pBlendStateDesc->DestBlendAlpha);
-      d3d11_desc.RenderTarget[i].BlendOpAlpha = D3D11_BLEND_OP(pBlendStateDesc->BlendOpAlpha);
-      d3d11_desc.RenderTarget[i].RenderTargetWriteMask = pBlendStateDesc->RenderTargetWriteMask[i];
-    }
+  for (unsigned i = 0; i < 8; i++) {
+    d3d11_desc.RenderTarget[i].BlendEnable = pBlendStateDesc->BlendEnable[i];
+    d3d11_desc.RenderTarget[i].SrcBlend = D3D11_BLEND(pBlendStateDesc->SrcBlend);
+    d3d11_desc.RenderTarget[i].DestBlend = D3D11_BLEND(pBlendStateDesc->DestBlend);
+    d3d11_desc.RenderTarget[i].BlendOp = D3D11_BLEND_OP(pBlendStateDesc->BlendOp);
+    d3d11_desc.RenderTarget[i].SrcBlendAlpha = D3D11_BLEND(pBlendStateDesc->SrcBlendAlpha);
+    d3d11_desc.RenderTarget[i].DestBlendAlpha = D3D11_BLEND(pBlendStateDesc->DestBlendAlpha);
+    d3d11_desc.RenderTarget[i].BlendOpAlpha = D3D11_BLEND_OP(pBlendStateDesc->BlendOpAlpha);
+    d3d11_desc.RenderTarget[i].RenderTargetWriteMask = pBlendStateDesc->RenderTargetWriteMask[i];
   }
 
   Com<ID3D11BlendState> d3d11_state;
@@ -1198,6 +1205,9 @@ MTLD3D10Device::CreateQuery(const D3D10_QUERY_DESC *pQueryDesc, ID3D10Query **pp
 HRESULT STDMETHODCALLTYPE
 MTLD3D10Device::CreatePredicate(const D3D10_QUERY_DESC *pPredicateDesc, ID3D10Predicate **ppPredicate) {
   InitReturnPtr(ppPredicate);
+
+  if (pPredicateDesc == nullptr)
+    return E_INVALIDARG;
 
   D3D11_QUERY_DESC d3d11_desc;
   d3d11_desc.Query = D3D11_QUERY(pPredicateDesc->Query);

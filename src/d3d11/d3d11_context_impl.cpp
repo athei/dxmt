@@ -683,6 +683,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4]) override {
+    if (!pRenderTargetView)
+      return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearRenderTargetView(static_cast<D3D11RenderTargetView *>(pRenderTargetView), ColorRGBA);
@@ -691,6 +694,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearUnorderedAccessViewUint(ID3D11UnorderedAccessView *pUnorderedAccessView, const UINT Values[4]) override {
+    if (!pUnorderedAccessView)
+      return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearUnorderedAccessViewUint(static_cast<D3D11UnorderedAccessView *>(pUnorderedAccessView), Values);
@@ -761,6 +767,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearUnorderedAccessViewFloat(ID3D11UnorderedAccessView *pUnorderedAccessView, const FLOAT Values[4]) override {
+    if (!pUnorderedAccessView)
+      return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearUnorderedAccessViewFloat(static_cast<D3D11UnorderedAccessView *>(pUnorderedAccessView), Values);
@@ -818,6 +827,9 @@ public:
   STDMETHODCALLTYPE
   ClearDepthStencilView(ID3D11DepthStencilView *pDepthStencilView, UINT ClearFlags, FLOAT Depth, UINT8 Stencil)
       override {
+    if (!pDepthStencilView)
+      return;
+
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearDepthStencilView(static_cast<D3D11DepthStencilView*>(pDepthStencilView), ClearFlags, Depth, Stencil);
@@ -4310,6 +4322,15 @@ public:
   bool promote_flush = false;
   /* UpdateSubresource maps default buffers, which applications cannot */
   bool mapping_for_update_ = false;
+
+  /* Stream output queries report nothing written, which is only right
+     without stream output targets */
+  void
+  WarnStreamOutputQuery() {
+    static std::atomic<bool> warned = false;
+    if (state_.StreamOutput.Targets.any_bound() && !warned.exchange(true))
+      WARN("Stream output queries do not count primitives, they report none written while targets are bound");
+  }
 
   /**
   Render pass can be invalidated by reasons:

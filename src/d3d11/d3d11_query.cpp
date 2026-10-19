@@ -125,4 +125,44 @@ CreateTimestampQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID
   return S_FALSE;
 }
 
+class StreamOutputQuery : public MTLD3DQueryBase<MTLD3D11StreamOutputQuery> {
+  using MTLD3DQueryBase<MTLD3D11StreamOutputQuery>::MTLD3DQueryBase;
+
+  // No data before the first End(), and none while building
+  QueryState state_ = QueryState::Undefined;
+
+  virtual UINT STDMETHODCALLTYPE
+  GetDataSize() override {
+    return IsPredicateQuery(desc_.Query) ? sizeof(BOOL) : sizeof(D3D11_QUERY_DATA_SO_STATISTICS);
+  };
+
+  virtual void
+  Begin() override {
+    state_ = QueryState::Building;
+  };
+
+  virtual void
+  End() override {
+    state_ = QueryState::Signaled;
+  };
+
+  virtual HRESULT
+  GetData(void *data) override {
+    if (state_ != QueryState::Signaled)
+      return DXGI_ERROR_INVALID_CALL;
+    if (data)
+      memset(data, 0, GetDataSize());
+    return S_OK;
+  }
+};
+
+HRESULT
+CreateStreamOutputQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID3D11Query1 **ppQuery) {
+  if (ppQuery) {
+    *ppQuery = ref(new StreamOutputQuery(pDevice, pDesc));
+    return S_OK;
+  }
+  return S_FALSE;
+}
+
 } // namespace dxmt

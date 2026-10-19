@@ -126,7 +126,11 @@ public:
     InitReturnPtr(ppBuffer);
 
     if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
-      return E_INVALIDARG; 
+      return E_INVALIDARG;
+
+    // Initial data without memory to copy from is invalid
+    if (pInitialData && !pInitialData->pSysMem)
+      return E_INVALIDARG;
 
     if (!ValidateResourceUsage(
             pDesc->Usage, pDesc->BindFlags, pDesc->CPUAccessFlags, pInitialData != nullptr,
@@ -430,6 +434,10 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateBlendState(const D3D11_BLEND_DESC *pBlendStateDesc,
                    ID3D11BlendState **ppBlendState) override {
+    InitReturnPtr(ppBlendState);
+    if (!pBlendStateDesc)
+      return E_INVALIDARG;
+
     ID3D11BlendState1 *pBlendState1;
     D3D11_BLEND_DESC1 desc;
     desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
@@ -469,6 +477,10 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState(const D3D11_RASTERIZER_DESC *pRasterizerDesc,
                         ID3D11RasterizerState **ppRasterizerState) override {
+    InitReturnPtr(ppRasterizerState);
+    if (!pRasterizerDesc)
+      return E_INVALIDARG;
+
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;
@@ -498,6 +510,10 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateQuery(const D3D11_QUERY_DESC *pQueryDesc, ID3D11Query **ppQuery) override {
+    InitReturnPtr(ppQuery);
+    if (!pQueryDesc)
+      return E_INVALIDARG;
+
     D3D11_QUERY_DESC1 desc;
     desc.Query = pQueryDesc->Query;
     desc.MiscFlags = pQueryDesc->MiscFlags;
@@ -508,6 +524,12 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreatePredicate(const D3D11_QUERY_DESC *pPredicateDesc,
                   ID3D11Predicate **ppPredicate) override {
+    InitReturnPtr(ppPredicate);
+    // The overflow predicates of single streams are predicates too, but
+    // Windows creates them only through CreateQuery
+    if (!pPredicateDesc || (pPredicateDesc->Query != D3D11_QUERY_OCCLUSION_PREDICATE &&
+                            pPredicateDesc->Query != D3D11_QUERY_SO_OVERFLOW_PREDICATE))
+      return E_INVALIDARG;
     return CreateQuery(pPredicateDesc,
                        reinterpret_cast<ID3D11Query **>(ppPredicate));
   }
@@ -811,6 +833,10 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState1(const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
                          ID3D11RasterizerState1 **ppRasterizerState) override {
+    InitReturnPtr(ppRasterizerState);
+    if (!pRasterizerDesc)
+      return E_INVALIDARG;
+
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;
@@ -885,7 +911,12 @@ public:
       ERR("CheckMultisampleQualityLevels1: unsupported flags ", Flags);
       return E_INVALIDARG;
     }
+    if (!pNumQualityLevels)
+      return E_INVALIDARG;
     *pNumQualityLevels = 0;
+    // D3D11 has at most 32 samples
+    if (SampleCount == 0 || SampleCount > D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT)
+      return E_FAIL;
     MTL_DXGI_FORMAT_DESC desc;
     if (FAILED(MTLQueryDXGIFormat(GetMTLDevice(), Format, desc)) ||
         desc.PixelFormat == WMTPixelFormatInvalid) {
@@ -1061,6 +1092,17 @@ public:
       *ppQuery = ref(new MTLD3D11DummyQuery<D3D11_QUERY_DATA_PIPELINE_STATISTICS>(this, pQueryDesc));
       return S_OK;
     }
+    case D3D11_QUERY_SO_STATISTICS:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
+    case D3D11_QUERY_SO_STATISTICS_STREAM0:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+    case D3D11_QUERY_SO_STATISTICS_STREAM1:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+    case D3D11_QUERY_SO_STATISTICS_STREAM2:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+    case D3D11_QUERY_SO_STATISTICS_STREAM3:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+      return CreateStreamOutputQuery(this, pQueryDesc, ppQuery);
     default:
       ERR("CreateQuery1: query type not implemented: ", pQueryDesc->Query);
       return E_NOTIMPL;
@@ -1210,6 +1252,9 @@ private:
   D3D11Multithread d3dmt_;
 };
 
+/* IDXGIDevice1's maximum frame latency when not set, as on Windows */
+constexpr UINT kDefaultFrameLatency = 3;
+
 /**
  * \brief D3D11 device container
  *
@@ -1316,7 +1361,14 @@ public:
   CreateSurface(const DXGI_SURFACE_DESC *desc, UINT surface_count,
                 DXGI_USAGE usage, const DXGI_SHARED_RESOURCE *shared_resource,
                 IDXGISurface **surface) override{
-    UNIMPLEMENTED("CreateSurface");
+    if (!desc || (surface_count && !surface))
+      return E_INVALIDARG;
+
+    // Creating textures for DXGI surfaces is not implemented yet
+    ERR("DXGIDevice::CreateSurface: not implemented");
+    for (UINT i = 0; i < surface_count; i++)
+      surface[i] = nullptr;
+    return E_NOTIMPL;
   }
 
   HRESULT STDMETHODCALLTYPE
@@ -1344,14 +1396,17 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT MaxLatency) override {
-    cmd_queue_.SetMaxLatency(MaxLatency);
+    // At most 16 frames, and 0 means the default of 3
+    if (MaxLatency > DXGI_MAX_SWAP_CHAIN_BUFFERS)
+      return DXGI_ERROR_INVALID_CALL;
+    cmd_queue_.SetMaxLatency(MaxLatency ? MaxLatency : kDefaultFrameLatency);
     return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT *pMaxLatency) override {
-    if (pMaxLatency) {
-      *pMaxLatency = cmd_queue_.GetMaxLatency();
-    }
+    if (!pMaxLatency)
+      return DXGI_ERROR_INVALID_CALL;
+    *pMaxLatency = cmd_queue_.GetMaxLatency();
     return S_OK;
   }
 

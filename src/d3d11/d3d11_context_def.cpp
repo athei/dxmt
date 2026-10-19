@@ -327,6 +327,11 @@ public:
       break;
     }
     default:
+      if (IsStreamOutputQuery(desc.Query)) {
+        WarnStreamOutputQuery();
+        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Begin();
+        break;
+      }
       ERR("DeferredContext: unhandled query type ", desc.Query);
       break;
     }
@@ -374,6 +379,11 @@ public:
       break;
     }
     default:
+      if (IsStreamOutputQuery(desc.Query)) {
+        WarnStreamOutputQuery();
+        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->End();
+        break;
+      }
       ERR("DeferredContext: unhandled query type ", desc.Query);
       break;
     }
@@ -469,6 +479,9 @@ public:
   void STDMETHODCALLTYPE
   SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
     // MSDN: SwapDeviceContextState is not supported on a deferred context.
+    // It returns no previous state, as on Windows
+    // (test_deferred_context_swap_state in Wine's d3d11 tests)
+    InitReturnPtr(ppPreviousState);
   }
 
   HRESULT
