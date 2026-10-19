@@ -514,10 +514,31 @@ typedef struct _D3DKMT_RELEASEKEYEDMUTEX {
   UINT64 FenceValue;
 } D3DKMT_RELEASEKEYEDMUTEX;
 
+typedef struct _D3DKMT_ADAPTERINFO {
+  D3DKMT_HANDLE hAdapter;
+  LUID AdapterLuid;
+  ULONG NumOfSources;
+  BOOL bPrecisePresentRegionsPreferred;
+} D3DKMT_ADAPTERINFO;
+
+typedef struct _D3DKMT_ENUMADAPTERS2 {
+  ULONG NumAdapters;
+  D3DKMT_ADAPTERINFO *pAdapters;
+} D3DKMT_ENUMADAPTERS2;
+
+typedef struct _D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME {
+  WCHAR DeviceName[32];
+  D3DKMT_HANDLE hAdapter;
+  LUID AdapterLuid;
+  UINT VidPnSourceId;
+} D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME;
+
 #ifdef _WIN32
 
 extern "C"
 {
+  DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTEnumAdapters2(D3DKMT_ENUMADAPTERS2 *desc);
+  DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName(D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *desc);
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTCreateDevice(D3DKMT_CREATEDEVICE *desc);
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTDestroyAllocation(const D3DKMT_DESTROYALLOCATION *desc);
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTDestroyDevice(const D3DKMT_DESTROYDEVICE *desc);
@@ -547,6 +568,16 @@ extern "C"
 
 extern "C"
 {
+  inline NTSTATUS D3DKMTEnumAdapters2(D3DKMT_ENUMADAPTERS2 *desc) {
+    dxmt::Logger::warn("D3DKMTEnumAdapters2 not implemented");
+    return -1;
+  }
+
+  inline NTSTATUS D3DKMTOpenAdapterFromGdiDisplayName(D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *desc) {
+    dxmt::Logger::warn("D3DKMTOpenAdapterFromGdiDisplayName not implemented");
+    return -1;
+  }
+
   inline NTSTATUS D3DKMTCreateDevice(D3DKMT_CREATEDEVICE *desc) {
     dxmt::Logger::warn("D3DKMTCreateDevice not implemented");
     return -1;

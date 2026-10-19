@@ -3,6 +3,7 @@
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
 #include "nvapi_lite_common.h"
+#include "util_luid.hpp"
 #include "util_string.hpp"
 #include "winemetal.h"
 #include "wsi_monitor.hpp"
@@ -729,10 +730,10 @@ NvAPI_DRS_LoadSettings(NvDRSSessionHandle hSession) {
 
 LUID
 GetAdapterLuid(WMT::Device device) {
-  /**
-  TODO: duplicated impl in `dxgi_adapter.cpp`
-  */
-  return std::bit_cast<LUID>(__builtin_bswap64(device.registryID()));
+  // The LUID DXGI reports for the device's adapter
+  WCHAR name[128] = {};
+  device.name().getCString((char *)name, sizeof(name) - sizeof(WCHAR), WMTUTF16StringEncoding);
+  return GetMetalDeviceLuid(device.registryID(), name, WMT::CopyAllDevices().count());
 }
 
 NVAPI_INTERFACE
