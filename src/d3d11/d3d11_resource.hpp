@@ -140,6 +140,8 @@ struct D3D11ResourceCommon : ID3D11Resource {
   Rc<Buffer> buffer_{};
   Rc<Texture> texture_{};
   uint32_t bind_flags_{};
+  D3D11_USAGE usage_{};
+  uint32_t cpu_access_flags_{};
   Rc<KeyedMutex> keyed_mutex_{};
 
   const Rc<Buffer> &buffer() const {
@@ -182,6 +184,30 @@ GetStagingResource(ID3D11Resource *pResource, UINT Subresource) {
 
   return static_cast<D3D11ResourceCommon *>(pResource)->staging(Subresource);
 };
+inline UINT
+GetSubresourceCount(ID3D11Resource *pResource) {
+  D3D11_RESOURCE_DIMENSION dimension;
+  pResource->GetType(&dimension);
+  switch (dimension) {
+  case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+    D3D11_TEXTURE1D_DESC desc;
+    static_cast<D3D11ResourceCommon *>(pResource)->GetDesc(&desc);
+    return desc.MipLevels * desc.ArraySize;
+  }
+  case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+    D3D11_TEXTURE2D_DESC desc;
+    static_cast<D3D11ResourceCommon *>(pResource)->GetDesc(&desc);
+    return desc.MipLevels * desc.ArraySize;
+  }
+  case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+    D3D11_TEXTURE3D_DESC desc;
+    static_cast<D3D11ResourceCommon *>(pResource)->GetDesc(&desc);
+    return desc.MipLevels;
+  }
+  default:
+    return 1;
+  }
+}
 inline Rc<Texture>
 GetTexture(ID3D11Resource *pResource) {
   return static_cast<D3D11ResourceCommon *>(pResource)->texture();
@@ -198,6 +224,8 @@ public:
       d3d10(reinterpret_cast<tag::COM *>(this), device->GetImmediateContextPrivate()),
       dxgi_surface(this) {
     this->bind_flags_ = desc.BindFlags;
+    this->usage_ = desc.Usage;
+    this->cpu_access_flags_ = desc.CPUAccessFlags;
   }
 
   template <std::size_t n> HRESULT ResolveBase(REFIID riid, void **ppvObject) {
@@ -595,6 +623,15 @@ HRESULT ExtractEntireResourceViewDescription(const RESOURCE_DESC *pResourceDesc,
     return ExtractEntireResourceViewDescription(pResourceDesc, pViewDescOut);
   }
 }
+
+/* Checks a view description against the resource as Windows does before a
+   view is created: the resource's bind flags, and for textures the view
+   dimension, the format and the mip level and array or depth slice range.
+   A NULL description is checked for the default view of the resource. */
+HRESULT ValidateViewDescription(ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC1 *pDesc);
+HRESULT ValidateViewDescription(ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC1 *pDesc);
+HRESULT ValidateViewDescription(ID3D11Resource *pResource, const D3D11_RENDER_TARGET_VIEW_DESC1 *pDesc);
+HRESULT ValidateViewDescription(ID3D11Resource *pResource, const D3D11_DEPTH_STENCIL_VIEW_DESC *pDesc);
 
 template <typename TEXTURE_DESC>
 HRESULT CreateMTLTextureDescriptor(MTLD3D11Device *pDevice,

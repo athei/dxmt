@@ -965,6 +965,25 @@ public:
       if (desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFER || desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX) {
         return;
       }
+      // Windows only generates mipmaps of resources created for it
+      D3D11_RESOURCE_DIMENSION dimension;
+      UINT misc_flags = 0;
+      srv->resource_->GetType(&dimension);
+      if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
+        D3D11_TEXTURE1D_DESC texture_desc;
+        srv->resource_->GetDesc(&texture_desc);
+        misc_flags = texture_desc.MiscFlags;
+      } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+        D3D11_TEXTURE2D_DESC texture_desc;
+        srv->resource_->GetDesc(&texture_desc);
+        misc_flags = texture_desc.MiscFlags;
+      } else if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+        D3D11_TEXTURE3D_DESC texture_desc;
+        srv->resource_->GetDesc(&texture_desc);
+        misc_flags = texture_desc.MiscFlags;
+      }
+      if (!(misc_flags & D3D11_RESOURCE_MISC_GENERATE_MIPS))
+        return;
       SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
       EmitOP([tex = srv->texture(), viewId = srv->viewId()](ArgumentEncodingContext &enc) {
         // workaround: mipmap generation of a8unorm is borked, so use a r8unorm view
@@ -1220,14 +1239,18 @@ public:
       if (auto dynamic = GetDynamicBuffer(pDstResource, &buffer_len, &unused_bind_flag)) {
         D3D11_MAPPED_SUBRESOURCE mapped;
         if ((CopyFlags & D3D11_COPY_DISCARD) || (copy_len == buffer_len && copy_offset == 0)) {
+          mapping_for_update_ = true;
           Map(pDstResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+          mapping_for_update_ = false;
           auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
           allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
           Unmap(pDstResource, 0);
           return;
         }
         if (CopyFlags & D3D11_COPY_NO_OVERWRITE) {
+          mapping_for_update_ = true;
           Map(pDstResource, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+          mapping_for_update_ = false;
           auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
           allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
           Unmap(pDstResource, 0);
@@ -1235,11 +1258,9 @@ public:
         }
       }
       if (auto staging = GetStagingResource(pDstResource, DstSubresource); unlikely(staging)) {
-        // Per MSDN: The CPU copies data from memory to a subresource created in non-mappable memory.
-        // Also MSDN: A resource cannot be used as a destination if: the resource is created with immutable or
-        // dynamic usage.
-        // So it's legal?
-        UNIMPLEMENTED("update buffer: staging");
+        // Windows leaves staging buffers unchanged here (test_staging_buffers
+        // in Wine's d3d11 tests)
+        WARN("UpdateSubresource: ignoring a staging buffer destination");
       } else if (auto bindable = GetResourceCommon(pDstResource)) {
         auto [staging_buffer, offset] = AllocateStagingBuffer(copy_len, 16);
         staging_buffer.updateContents(offset, pSrcData, copy_len);
@@ -4287,6 +4308,8 @@ public:
 #pragma region CommandEncoder Maintain State
 
   bool promote_flush = false;
+  /* UpdateSubresource maps default buffers, which applications cannot */
+  bool mapping_for_update_ = false;
 
   /**
   Render pass can be invalidated by reasons:

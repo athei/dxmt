@@ -28,6 +28,49 @@
 
 namespace dxmt {
 
+/* The GPU only reads dynamic resources, so they cannot have these */
+constexpr UINT kGPUWriteBindFlags = D3D11_BIND_STREAM_OUTPUT | D3D11_BIND_RENDER_TARGET |
+                                    D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_UNORDERED_ACCESS;
+
+/* Usage, bind flags and CPU access of a new resource as Windows accepts
+   them: immutable resources need initial data and the GPU only reads them,
+   dynamic ones are written only by the CPU, staging ones are only copied,
+   and default ones have no CPU access unless the caller allows it */
+inline bool
+ValidateResourceUsage(
+    D3D11_USAGE Usage, UINT BindFlags, UINT CPUAccessFlags, bool HasInitialData, bool DefaultCPUAccess
+) {
+  switch (Usage) {
+  case D3D11_USAGE_DEFAULT:
+    return !CPUAccessFlags || DefaultCPUAccess;
+  case D3D11_USAGE_IMMUTABLE:
+    return HasInitialData && BindFlags && !(BindFlags & kGPUWriteBindFlags) && !CPUAccessFlags;
+  case D3D11_USAGE_DYNAMIC:
+    return BindFlags && !(BindFlags & kGPUWriteBindFlags) && CPUAccessFlags == D3D11_CPU_ACCESS_WRITE;
+  case D3D11_USAGE_STAGING:
+    return !BindFlags && CPUAccessFlags;
+  default:
+    return false;
+  }
+}
+
+/* Windows 8.1 and later accept CPU access for default buffers that are
+   only shader resources or unordered access views, at feature level 11_0
+   and above, and for default textures that are only shader resources,
+   render targets or unordered access views */
+constexpr UINT kDefaultCPUAccessBufferBindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+constexpr UINT kDefaultCPUAccessTextureBindFlags =
+    D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
+
+template <typename DESC>
+inline bool
+ValidateTextureUsage(const DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData) {
+  return ValidateResourceUsage(
+      pDesc->Usage, pDesc->BindFlags, pDesc->CPUAccessFlags, pInitialData != nullptr,
+      pDesc->BindFlags && !(pDesc->BindFlags & ~kDefaultCPUAccessTextureBindFlags)
+  );
+}
+
 const GUID kRenderdocUUID = {0xa7aa6116,
                              0x9c8d,
                              0x4bba,
@@ -85,14 +128,42 @@ public:
     if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
       return E_INVALIDARG; 
 
+    if (!ValidateResourceUsage(
+            pDesc->Usage, pDesc->BindFlags, pDesc->CPUAccessFlags, pInitialData != nullptr,
+            GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 && pDesc->BindFlags &&
+                !(pDesc->BindFlags & ~kDefaultCPUAccessBufferBindFlags)
+        ))
+      return E_INVALIDARG;
+
+    // Raw views are shader resource or unordered access views of buffers
+    // that are not structured; structures are whole dwords;
+    // constant buffers are whole 16 byte constants
+    if (pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS) {
+      if (!(pDesc->BindFlags & (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS)) ||
+          (pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
+        return E_INVALIDARG;
+    }
+    if (pDesc->MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) {
+      auto stride = pDesc->StructureByteStride;
+      if (!stride || stride % 4)
+        return E_INVALIDARG;
+    }
+    if ((pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) && pDesc->ByteWidth % 16)
+      return E_INVALIDARG;
+
+    // Only structured buffers keep their stride
+    D3D11_BUFFER_DESC desc = *pDesc;
+    if (!(desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED))
+      desc.StructureByteStride = 0;
+
     try {
-      switch (pDesc->Usage) {
+      switch (desc.Usage) {
       case D3D11_USAGE_DEFAULT:
       case D3D11_USAGE_IMMUTABLE:
       case D3D11_USAGE_DYNAMIC:
-        return dxmt::CreateBuffer(this, pDesc, pInitialData, ppBuffer);
+        return dxmt::CreateBuffer(this, &desc, pInitialData, ppBuffer);
       case D3D11_USAGE_STAGING:
-        return CreateStagingBuffer(this, pDesc, pInitialData, ppBuffer);
+        return CreateStagingBuffer(this, &desc, pInitialData, ppBuffer);
       default:
         DXMT_UNREACHABLE
       }
@@ -115,12 +186,17 @@ public:
     if (pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED)
       return E_INVALIDARG; // not supported yet
 
+    if (!ValidateTextureUsage(pDesc, pInitialData))
+      return E_INVALIDARG;
+
     try {
       switch (pDesc->Usage) {
       case D3D11_USAGE_DEFAULT:
       case D3D11_USAGE_IMMUTABLE:
         return CreateDeviceTexture1D(this, pDesc, pInitialData, ppTexture1D);
       case D3D11_USAGE_DYNAMIC: {
+        if (pDesc->BindFlags & kGPUWriteBindFlags)
+          return E_INVALIDARG;
         HRESULT hr = CreateDynamicLinearTexture1D(this, pDesc, pInitialData, ppTexture1D);
         if (SUCCEEDED(hr))
           return hr;
@@ -203,7 +279,7 @@ public:
       ID3D11DepthStencilView **ppDepthStencilView) override {
     InitReturnPtr(ppDepthStencilView);
 
-    if (!pResource)
+    if (!pResource || FAILED(ValidateViewDescription(pResource, pDesc)))
       return E_INVALIDARG;
 
     if (!ppDepthStencilView)
@@ -843,12 +919,17 @@ public:
     if ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED))
       return E_INVALIDARG; // not supported yet
 
+    if (!ValidateTextureUsage(pDesc, pInitialData))
+      return E_INVALIDARG;
+
     try {
       switch (pDesc->Usage) {
       case D3D11_USAGE_DEFAULT:
       case D3D11_USAGE_IMMUTABLE:
         return CreateDeviceTexture2D(this, pDesc, pInitialData, ppTexture2D);
       case D3D11_USAGE_DYNAMIC: {
+        if (pDesc->BindFlags & kGPUWriteBindFlags)
+          return E_INVALIDARG;
         HRESULT hr = CreateDynamicLinearTexture2D(this, pDesc, pInitialData, ppTexture2D);
         if (SUCCEEDED(hr))
           return hr;
@@ -879,12 +960,17 @@ public:
     if ((pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILED))
       return E_INVALIDARG; // not supported yet
 
+    if (!ValidateTextureUsage(pDesc, pInitialData))
+      return E_INVALIDARG;
+
     try {
       switch (pDesc->Usage) {
       case D3D11_USAGE_DEFAULT:
       case D3D11_USAGE_IMMUTABLE:
         return CreateDeviceTexture3D(this, pDesc, pInitialData, ppTexture3D);
       case D3D11_USAGE_DYNAMIC:
+        if (pDesc->BindFlags & kGPUWriteBindFlags)
+          return E_INVALIDARG;
         return CreateDynamicTexture3D(this, pDesc, pInitialData, ppTexture3D);
       case D3D11_USAGE_STAGING:
         if (pDesc->BindFlags != 0) {
@@ -911,7 +997,7 @@ public:
       ID3D11ShaderResourceView1 **ppSRView) override {
     InitReturnPtr(ppSRView);
 
-    if (!pResource)
+    if (!pResource || FAILED(ValidateViewDescription(pResource, pDesc)))
       return E_INVALIDARG;
 
     if (!ppSRView)
@@ -925,7 +1011,7 @@ public:
       ID3D11UnorderedAccessView1 **ppUAView) override {
     InitReturnPtr(ppUAView);
 
-    if (!pResource)
+    if (!pResource || FAILED(ValidateViewDescription(pResource, pDesc)))
       return E_INVALIDARG;
 
     if (!ppUAView)
@@ -939,7 +1025,7 @@ public:
       ID3D11RenderTargetView1 **ppRTView) override {
     InitReturnPtr(ppRTView);
 
-    if (!pResource)
+    if (!pResource || FAILED(ValidateViewDescription(pResource, pDesc)))
       return E_INVALIDARG;
 
     if (!ppRTView)
