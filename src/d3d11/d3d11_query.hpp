@@ -7,6 +7,40 @@
 
 namespace dxmt {
 
+inline bool
+IsPredicateQuery(D3D11_QUERY query) {
+  switch (query) {
+  case D3D11_QUERY_OCCLUSION_PREDICATE:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+    return true;
+  default:
+    return false;
+  }
+}
+
+inline bool
+IsStreamOutputQuery(D3D11_QUERY query) {
+  switch (query) {
+  case D3D11_QUERY_SO_STATISTICS:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE:
+  case D3D11_QUERY_SO_STATISTICS_STREAM0:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM0:
+  case D3D11_QUERY_SO_STATISTICS_STREAM1:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+  case D3D11_QUERY_SO_STATISTICS_STREAM2:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+  case D3D11_QUERY_SO_STATISTICS_STREAM3:
+  case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+    return true;
+  default:
+    return false;
+  }
+}
+
 template <typename Query>
 class MTLD3DQueryBase : public MTLD3D11DeviceChild<Query> {
 public:
@@ -23,12 +57,15 @@ public:
     *ppvObject = nullptr;
 
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D11DeviceChild) ||
-        riid == __uuidof(ID3D11Query)) {
+        riid == __uuidof(ID3D11Asynchronous) || riid == __uuidof(ID3D11Query) ||
+        (riid == __uuidof(ID3D11Predicate) && IsPredicateQuery(desc_.Query))) {
       *ppvObject = ref(this);
       return S_OK;
     }
 
-    if (riid == __uuidof(ID3D10DeviceChild) || riid == __uuidof(ID3D10Query)) {
+    if (riid == __uuidof(ID3D10DeviceChild) || riid == __uuidof(ID3D10Asynchronous) ||
+        riid == __uuidof(ID3D10Query) ||
+        (riid == __uuidof(ID3D10Predicate) && IsPredicateQuery(desc_.Query))) {
       *ppvObject = ref(&d3d10_);
       return S_OK;
     }
@@ -181,5 +218,21 @@ public:
 HRESULT CreateTimestampQuery(MTLD3D11Device *pDevice,
                               const D3D11_QUERY_DESC1 *pDesc,
                               ID3D11Query1 **ppQuery);
+
+/**
+ * Stream output statistics and overflow predicates. DXMT does not count what
+ * stream output writes, so they report no primitives and no overflow, which
+ * is the right answer while no stream output targets are bound.
+ */
+class MTLD3D11StreamOutputQuery : public ID3D11Query1 {
+public:
+  virtual void Begin() = 0;
+  virtual void End() = 0;
+  virtual HRESULT GetData(void *data) = 0;
+};
+
+HRESULT CreateStreamOutputQuery(MTLD3D11Device *pDevice,
+                                const D3D11_QUERY_DESC1 *pDesc,
+                                ID3D11Query1 **ppQuery);
 
 } // namespace dxmt
