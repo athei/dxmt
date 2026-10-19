@@ -2,6 +2,7 @@
 #include "config/config.hpp"
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
+#include "dxgi_vk_interfaces.h"
 #include "com/com_guid.hpp"
 #include "log/log.hpp"
 #include "util_hotpatch.h"
@@ -13,6 +14,30 @@ namespace dxmt {
 
 Com<IMTLDXGIAdapter> CreateAdapter(WMT::Device Device,
                                    IDXGIFactory2 *pFactory, Config &config);
+
+HRESULT CreateDXGIVkSwapChain(
+    IDXGIFactory1 *pFactory, IDXGIVkSwapChainFactory *pSwapChainFactory, IUnknown *pDevice, HWND hWnd,
+    const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
+    IDXGISwapChain1 **ppSwapChain);
+
+/* A fullscreen swap chain needs a valid scanline order and scaling, as in
+   Wine's dxgi_validate_swapchain_fullscreen_desc. */
+bool ValidateSwapChainFullscreenDesc(const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDesc) {
+  if (pDesc->Windowed)
+    return true;
+
+  if (UINT(pDesc->ScanlineOrdering) > DXGI_MODE_SCANLINE_ORDER_LOWER_FIELD_FIRST) {
+    WARN("DXGI: Invalid scanline order ", UINT(pDesc->ScanlineOrdering));
+    return false;
+  }
+
+  if (UINT(pDesc->Scaling) > DXGI_MODE_SCALING_STRETCHED) {
+    WARN("DXGI: Invalid scaling ", UINT(pDesc->Scaling));
+    return false;
+  }
+
+  return true;
+}
 
 class MTLDXGIFactory : public MTLDXGIObject<IDXGIFactory6> {
 
@@ -109,8 +134,12 @@ public:
     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
       return DXGI_ERROR_INVALID_CALL;
 
+    // Devices that are not DXMT's own, such as vkd3d-proton's D3D12 command
+    // queues, create a presenter that DXGI wraps in a swap chain
     Com<IMTLSwapChainFactory> swapchain_factory;
-    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&swapchain_factory)))) {
+    Com<IDXGIVkSwapChainFactory> vk_swapchain_factory;
+    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&swapchain_factory))) &&
+        FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&vk_swapchain_factory)))) {
       ERR("Unsupported device type");
       return DXGI_ERROR_UNSUPPORTED;
     }
@@ -127,12 +156,20 @@ public:
 
     if (pFullscreenDesc) {
       fsDesc = *pFullscreenDesc;
+      // An invalid scanline order or scaling creates a windowed swap chain,
+      // as on Windows
+      if (!ValidateSwapChainFullscreenDesc(&fsDesc))
+        fsDesc.Windowed = TRUE;
     } else {
       fsDesc.RefreshRate = {0, 0};
       fsDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
       fsDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
       fsDesc.Windowed = TRUE;
     }
+
+    if (vk_swapchain_factory != nullptr)
+      return CreateDXGIVkSwapChain(this, vk_swapchain_factory.ptr(), pDevice,
+                                   hWnd, &desc, &fsDesc, ppSwapChain);
 
     return swapchain_factory->CreateSwapChain(this, hWnd, &desc, &fsDesc,
                                               ppSwapChain);
