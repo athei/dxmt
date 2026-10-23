@@ -372,6 +372,7 @@ public:
     for (auto &buffer : buffers) {
       buffer->AddRefPrivate();
       buffer->Release();
+      buffer->swapchain_usage_ = BackBufferUsage() | DXGI_USAGE_READ_ONLY;
     }
     // the last one holds buffer 0's contents while the buffers move
     rotation_buffer_ = std::move(buffers.back());
@@ -383,6 +384,16 @@ public:
   bool
   IsSequential() const {
     return desc_.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL || desc_.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+  }
+
+  /* What IDXGIResource::GetUsage reports for the back buffers; the ones
+     other than buffer 0 add DXGI_USAGE_READ_ONLY */
+  DXGI_USAGE
+  BackBufferUsage() const {
+    DXGI_USAGE usage = (desc_.BufferUsage & ~DXGI_USAGE_READ_ONLY) | DXGI_USAGE_BACK_BUFFER;
+    if (!IsSequential())
+      usage |= DXGI_USAGE_DISCARD_ON_PRESENT;
+    return usage;
   }
 
   void
@@ -711,6 +722,12 @@ public:
     ApplyLayerProps();
 
     backbuffer_desc_.Format = desc_.Format;
+    // d2d1 accepts a GDI-compatible target only on such a texture. Once set,
+    // the flag stays in desc_.Flags (GetDesc reports it) and on the back
+    // buffers, so a resize that passes 0 keeps both in agreement.
+    desc_.Flags |= flags & DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE;
+    if (desc_.Flags & DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE)
+      backbuffer_desc_.MiscFlags |= D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
 
     backbuffer_ = nullptr;
     if (FAILED(dxmt::CreateDeviceTexture2D(
@@ -720,6 +737,7 @@ public:
     // CreateDeviceTexture2D returns public reference, change to private one here
     backbuffer_->AddRefPrivate();
     backbuffer_->Release();
+    backbuffer_->swapchain_usage_ = BackBufferUsage();
 
     if constexpr (EnableMetalFX) {
       D3D11_TEXTURE2D_DESC1 upscaled_desc_ = backbuffer_desc_;
