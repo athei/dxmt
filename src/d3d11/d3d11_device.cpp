@@ -564,14 +564,14 @@ public:
     }
 
     if (Format == DXGI_FORMAT_UNKNOWN) {
-      *pFormatSupport =
-          D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+      *pFormatSupport = MaskFormatSupport(D3D11_FORMAT_SUPPORT_BUFFER | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE);
       return S_OK;
     }
 
+    // Windows fails with E_FAIL and no support for formats it does not know
     MTL_DXGI_FORMAT_DESC metal_format;
     if (FAILED(MTLQueryDXGIFormat(GetMTLDevice(), Format, metal_format))) {
-      return E_INVALIDARG;
+      return E_FAIL;
     }
 
     UINT outFormatSupport = 0;
@@ -646,11 +646,27 @@ public:
         Format == DXGI_FORMAT_R32G32B32A32_SINT)
       outFormatSupport |= D3D11_FORMAT_SUPPORT_SO_BUFFER;
 
+    outFormatSupport = MaskFormatSupport(outFormatSupport);
+
     if (pFormatSupport) {
       *pFormatSupport = outFormatSupport;
     }
 
-    return S_OK;
+    return outFormatSupport ? S_OK : E_FAIL;
+  }
+
+  /* Leaves out what the device's feature level does not have */
+  UINT
+  MaskFormatSupport(UINT Support) {
+    auto feature_level = GetFeatureLevel();
+    if (feature_level < D3D_FEATURE_LEVEL_11_0)
+      Support &= ~D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW;
+    if (feature_level < D3D_FEATURE_LEVEL_10_1)
+      Support &= ~(D3D11_FORMAT_SUPPORT_SHADER_GATHER | D3D11_FORMAT_SUPPORT_SHADER_GATHER_COMPARISON);
+    if (feature_level < D3D_FEATURE_LEVEL_10_0)
+      Support &= ~(D3D11_FORMAT_SUPPORT_SHADER_SAMPLE_COMPARISON | D3D11_FORMAT_SUPPORT_BUFFER |
+                   D3D11_FORMAT_SUPPORT_SO_BUFFER);
+    return Support;
   }
 
   HRESULT STDMETHODCALLTYPE CheckMultisampleQualityLevels(
