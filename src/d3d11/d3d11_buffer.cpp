@@ -22,6 +22,7 @@
 #include "dxmt_dynamic.hpp"
 #include "dxmt_format.hpp"
 #include "d3d11_resource.hpp"
+#include "util_math.hpp"
 
 namespace dxmt {
 
@@ -77,6 +78,37 @@ private:
       counter_ = std::move(counter);
       subset_ = ResourceSubsetState(info.byteOffset, info.byteWidth);
     }
+  };
+
+  using RTVBase = TResourceViewBase<tag_render_target_view<D3D11Buffer>>;
+
+  /**
+  A render target view of a buffer: a 2D texture of one row over the
+  buffer's memory, which the view owns.
+  */
+  class BufferRTV : public RTVBase {
+  public:
+    BufferRTV(
+        const tag_render_target_view<>::DESC1 *pDesc, D3D11Buffer *pResource, MTLD3D11Device *pDevice,
+        Rc<Texture> &&texture, WMTPixelFormat format, uint32_t byte_offset, uint32_t byte_width
+    ) :
+        RTVBase(pDesc, pResource, pDevice),
+        alias_(std::move(texture)) {
+      this->texture_ = alias_.ptr();
+      this->view_id_ = alias_->fullView;
+      this->format_ = format;
+      this->pass_desc_ = {
+          .RenderTargetArrayLength = 0,
+          .SampleCount = 1,
+          .DepthPlane = 0,
+          .Width = alias_->width(),
+          .Height = 1,
+      };
+      this->subset_ = ResourceSubsetState(byte_offset, byte_width);
+    }
+
+  private:
+    Rc<Texture> alias_;
   };
 
 public:
@@ -295,6 +327,64 @@ public:
         std::move(counter)
     ));
     *ppView = srv;
+    return S_OK;
+  };
+
+  HRESULT
+  STDMETHODCALLTYPE
+  CreateRenderTargetView(const D3D11_RENDER_TARGET_VIEW_DESC1 *pDesc, ID3D11RenderTargetView1 **ppView) override {
+    if (!pDesc || pDesc->ViewDimension != D3D11_RTV_DIMENSION_BUFFER)
+      return E_INVALIDARG;
+    // the view stays on the buffer's allocation, which only dynamic buffers
+    // replace (and those cannot be render targets)
+    if (!(desc.BindFlags & D3D11_BIND_RENDER_TARGET) || desc.Usage == D3D11_USAGE_DYNAMIC)
+      return E_INVALIDARG;
+    MTL_DXGI_FORMAT_DESC format;
+    if (FAILED(MTLQueryDXGIFormat(m_parent->GetMTLDevice(), pDesc->Format, format)) ||
+        format.PixelFormat == WMTPixelFormatInvalid || !format.BytesPerTexel ||
+        (format.Flag & (MTL_DXGI_FORMAT_TYPELESS | MTL_DXGI_FORMAT_BC | MTL_DXGI_FORMAT_DEPTH_PLANER |
+                        MTL_DXGI_FORMAT_STENCIL_PLANER)))
+      return E_INVALIDARG;
+    uint64_t first_element = pDesc->Buffer.FirstElement;
+    uint64_t element_count = pDesc->Buffer.NumElements;
+    if (!element_count || (first_element + element_count) * format.BytesPerTexel > desc.ByteWidth)
+      return E_INVALIDARG;
+
+    if (!ppView)
+      return S_FALSE;
+
+    // Metal renders to a buffer through a linear texture over its memory,
+    // which needs an aligned offset and row
+    auto metal = m_parent->GetMTLDevice();
+    uint32_t byte_offset = first_element * format.BytesPerTexel;
+    uint32_t byte_width = element_count * format.BytesPerTexel;
+    uint32_t alignment = metal.minimumLinearTextureAlignmentForPixelFormat(format.PixelFormat);
+    uint32_t bytes_per_row = align(byte_width, std::max(alignment, 1u));
+    if (element_count > 16384 || (alignment && byte_offset % alignment) || byte_offset + bytes_per_row > desc.ByteWidth) {
+      ERR("D3D11Buffer::CreateRenderTargetView: cannot render to elements ", first_element, " to ",
+          first_element + element_count, " of a buffer of ", desc.ByteWidth, " bytes in format ", pDesc->Format);
+      return E_FAIL;
+    }
+
+    WMTTextureInfo info = {};
+    info.pixel_format = format.PixelFormat;
+    info.width = element_count;
+    info.height = 1;
+    info.depth = 1;
+    info.array_length = 1;
+    info.type = WMTTextureType2D;
+    info.mipmap_level_count = 1;
+    info.sample_count = 1;
+    info.usage = WMTTextureUsage(WMTTextureUsageRenderTarget | WMTTextureUsageShaderRead);
+    Rc<Texture> texture = new Texture(info, metal);
+    auto allocation = texture->aliasBuffer(buffer_->current(), byte_offset, bytes_per_row);
+    if (!allocation) {
+      ERR("D3D11Buffer::CreateRenderTargetView: failed to create a texture over the buffer");
+      return E_FAIL;
+    }
+    auto _ = texture->rename(std::move(allocation));
+
+    *ppView = ref(new BufferRTV(pDesc, this, m_parent, std::move(texture), format.PixelFormat, byte_offset, byte_width));
     return S_OK;
   };
 

@@ -21,6 +21,7 @@
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
 #include "dxmt_allocation.hpp"
+#include "dxmt_buffer.hpp"
 #include "rc/util_rc_ptr.hpp"
 #include "thread.hpp"
 #include "util_flags.hpp"
@@ -150,11 +151,16 @@ public:
   uint64_t gpuResourceID;
   mach_port_t machPort;
   small_vector<GenericAccessTracker, 1> fenceTrackers;
+  /**
+  Set when the texture is a view of a buffer's memory (a render target view
+  of a buffer); accesses are then tracked on the buffer's allocation.
+  */
+  Rc<BufferAllocation> aliasedBuffer;
 
 private:
   TextureAllocation(
       Texture *descriptor, WMT::Reference<WMT::Buffer> &&buffer, void *mapped_buffer, const WMTTextureInfo &info,
-      unsigned bytes_per_row, Flags<TextureAllocationFlag> flags
+      unsigned bytes_per_row, Flags<TextureAllocationFlag> flags, uint64_t buffer_offset = 0
   );
   TextureAllocation(
       Texture *descriptor, WMT::Reference<WMT::Texture> &&texture, const WMTTextureInfo &textureDescriptor,
@@ -278,6 +284,11 @@ public:
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset = 0);
   Rc<TextureAllocation> import(mach_port_t mach_port);
+  /**
+  An allocation over the memory of a buffer allocation, at `offset`, for a
+  2D texture of one row; null if Metal cannot create it.
+  */
+  Rc<TextureAllocation> aliasBuffer(BufferAllocation *buffer, uint64_t offset, unsigned bytes_per_row);
 
   TextureView &view(TextureViewKey key);
   TextureView &view(TextureViewKey key, TextureAllocation *allocation);

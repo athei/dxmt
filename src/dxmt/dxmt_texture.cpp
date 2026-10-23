@@ -57,14 +57,14 @@ TextureView::TextureView(TextureAllocation *allocation, unsigned index, TextureV
 
 TextureAllocation::TextureAllocation(
     Texture *descriptor, WMT::Reference<WMT::Buffer> &&buffer, void *mapped_buffer, const WMTTextureInfo &info,
-    unsigned bytes_per_row, Flags<TextureAllocationFlag> flags
+    unsigned bytes_per_row, Flags<TextureAllocationFlag> flags, uint64_t buffer_offset
 ) :
     descriptor(descriptor),
     mappedMemory(mapped_buffer),
     buffer_(std::move(buffer)),
     flags_(flags) {
   auto info_copy = info;
-  obj_ = buffer_.newTexture(info_copy, 0, bytes_per_row);
+  obj_ = buffer_.newTexture(info_copy, buffer_offset, bytes_per_row);
 
   gpuResourceID = info_copy.gpu_resource_id;
   machPort = 0;
@@ -245,6 +245,19 @@ Texture::import(mach_port_t mach_port) {
   }
   assert(texture && "failed to import shared texture");
   return nullptr;
+}
+
+Rc<TextureAllocation>
+Texture::aliasBuffer(BufferAllocation *buffer, uint64_t offset, unsigned bytes_per_row) {
+  WMTTextureInfo info = info_; // copy
+  info.mach_port = 0;
+  info.options = buffer->options();
+  Rc<TextureAllocation> allocation =
+      new TextureAllocation(this, WMT::Reference<WMT::Buffer>(buffer->buffer()), nullptr, info, bytes_per_row, {}, offset);
+  if (!allocation->texture())
+    return nullptr;
+  allocation->aliasedBuffer = buffer;
+  return allocation;
 }
 
 TextureView &

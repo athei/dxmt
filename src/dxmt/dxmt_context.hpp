@@ -370,7 +370,9 @@ public:
   access(Rc<Texture> const &texture, unsigned level, unsigned slice, int flags) {
     auto allocation = texture->current();
     retainAllocation(allocation);
-    if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
+    if (unlikely(allocation->aliasedBuffer.ptr() != nullptr)) {
+      trackBuffer<stage>(allocation->aliasedBuffer.ptr(), flags);
+    } else if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
       if (likely(allocation->flags().test(TextureAllocationFlag::ShaderReadonly))) {
         track<stage>(allocation->fenceTrackers[0], flags);
       } else {
@@ -388,7 +390,9 @@ public:
     auto allocation = texture->current();
     retainAllocation(allocation);
     auto &view = texture->view(viewId, allocation);
-    if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
+    if (unlikely(allocation->aliasedBuffer.ptr() != nullptr)) {
+      trackBuffer<stage>(allocation->aliasedBuffer.ptr(), flags);
+    } else if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
       if (likely(allocation->flags().test(TextureAllocationFlag::ShaderReadonly))) {
         track<stage>(allocation->fenceTrackers[0], flags);
       } else {
