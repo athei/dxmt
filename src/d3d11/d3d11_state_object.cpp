@@ -568,6 +568,24 @@ HRESULT StateObjectCache<D3D11_DEPTH_STENCIL_DESC, IMTLD3D11DepthStencilState>::
   if (!ppDepthStencilState)
     return S_FALSE;
 
+  // As on Windows, the state of disabled depth or stencil tests reads as
+  // the default state
+  D3D11_DEPTH_STENCIL_DESC desc_normalized = *pDesc;
+  desc_normalized.DepthEnable = bool(desc_normalized.DepthEnable);
+  desc_normalized.StencilEnable = bool(desc_normalized.StencilEnable);
+  if (!desc_normalized.DepthEnable) {
+    desc_normalized.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    desc_normalized.DepthFunc = D3D11_COMPARISON_LESS;
+  }
+  if (!desc_normalized.StencilEnable) {
+    desc_normalized.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
+    desc_normalized.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+    desc_normalized.FrontFace = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP,
+                                 D3D11_COMPARISON_ALWAYS};
+    desc_normalized.BackFace = desc_normalized.FrontFace;
+  }
+  pDesc = &desc_normalized;
+
   if (cache.contains(*pDesc)) {
     cache.at(*pDesc)->QueryInterface(IID_PPV_ARGS(ppDepthStencilState));
     return S_OK;
@@ -693,11 +711,21 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
 
   // FIXME: validation
 
+  // As on Windows, values the filter and address modes do not use read as 0
+  // (NEVER for the comparison function)
+  if (!D3D11_DECODE_IS_ANISOTROPIC_FILTER(desc.Filter))
+    desc.MaxAnisotropy = 0;
+  if (!D3D11_DECODE_IS_COMPARISON_FILTER(desc.Filter))
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+  if (desc.AddressU != D3D11_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D11_TEXTURE_ADDRESS_BORDER &&
+      desc.AddressW != D3D11_TEXTURE_ADDRESS_BORDER)
+    memset(desc.BorderColor, 0, sizeof(desc.BorderColor));
+
   if (!ppSamplerState)
     return S_FALSE;
 
-  if (cache.contains(*pSamplerDesc)) {
-    cache.at(*pSamplerDesc)->QueryInterface(__uuidof(ID3D11SamplerState), (void **)ppSamplerState);
+  if (cache.contains(desc)) {
+    cache.at(desc)->QueryInterface(__uuidof(ID3D11SamplerState), (void **)ppSamplerState);
     return S_OK;
   }
 
@@ -785,8 +813,8 @@ StateObjectCache<D3D11_SAMPLER_DESC, D3D11SamplerState>::CreateStateObject(
     return E_FAIL;
   }
 
-  cache.emplace(*pSamplerDesc, std::make_unique<MTLD3D11SamplerState>(device, std::move(sampler), desc));
-  cache.at(*pSamplerDesc)->QueryInterface(__uuidof(ID3D11SamplerState), (void **)ppSamplerState);
+  cache.emplace(desc, std::make_unique<MTLD3D11SamplerState>(device, std::move(sampler), desc));
+  cache.at(desc)->QueryInterface(__uuidof(ID3D11SamplerState), (void **)ppSamplerState);
 
   return S_OK;
 };
@@ -818,6 +846,25 @@ StateObjectCache<D3D11_BLEND_DESC1, IMTLD3D11BlendState>::CreateStateObject(
       bool(desc_normalized.AlphaToCoverageEnable);
   desc_normalized.IndependentBlendEnable =
       bool(desc_normalized.IndependentBlendEnable);
+  // As on Windows: without independent blending every render target has the
+  // first one's state, and disabled blending or logic ops read as defaults
+  for (unsigned i = 0; i < 8; i++) {
+    auto &rt = desc_normalized.RenderTarget[i];
+    if (!desc_normalized.IndependentBlendEnable)
+      rt = pBlendStateDesc->RenderTarget[0];
+    rt.BlendEnable = bool(rt.BlendEnable);
+    rt.LogicOpEnable = bool(rt.LogicOpEnable);
+    if (!rt.BlendEnable) {
+      rt.SrcBlend = D3D11_BLEND_ONE;
+      rt.DestBlend = D3D11_BLEND_ZERO;
+      rt.BlendOp = D3D11_BLEND_OP_ADD;
+      rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+      rt.DestBlendAlpha = D3D11_BLEND_ZERO;
+      rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    }
+    if (!rt.LogicOpEnable)
+      rt.LogicOp = D3D11_LOGIC_OP_NOOP;
+  }
 
   if (cache.contains(desc_normalized)) {
     cache.at(desc_normalized)->QueryInterface(IID_PPV_ARGS(ppBlendState));
