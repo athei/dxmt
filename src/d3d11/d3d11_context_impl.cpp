@@ -1266,12 +1266,16 @@ public:
         }
         if (CopyFlags & D3D11_COPY_NO_OVERWRITE) {
           mapping_for_update_ = true;
-          Map(pDstResource, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+          HRESULT hr = Map(pDstResource, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
           mapping_for_update_ = false;
-          auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
-          allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
-          Unmap(pDstResource, 0);
-          return;
+          // A deferred context has no allocation to write into before a
+          // WRITE_DISCARD map in its command list; copy with a blit then
+          if (SUCCEEDED(hr)) {
+            auto [allocation, sub] = GetDynamicBufferAllocation(dynamic);
+            allocation->updateContents(copy_offset, pSrcData, copy_len, sub);
+            Unmap(pDstResource, 0);
+            return;
+          }
         }
       }
       if (auto staging = GetStagingResource(pDstResource, DstSubresource); unlikely(staging)) {
@@ -5458,12 +5462,16 @@ struct used_dynamic_buffer {
   Rc<BufferAllocation> allocation;
   uint32_t suballocation;
   bool latest;
+  // from a command list this one executes, which recycles the allocation
+  bool borrowed = false;
 };
 
 struct used_dynamic_lineartexture {
   Rc<DynamicLinearTexture> texture;
   Rc<TextureAllocation> allocation;
   bool latest;
+  // from a command list this one executes, which recycles the allocation
+  bool borrowed = false;
 };
 
 class MTLD3D11CommandList : public ManagedDeviceChild<ID3D11CommandList> {
@@ -5492,12 +5500,14 @@ public:
 
     while (!used_dynamic_buffers.empty()) {
       auto &buffer = used_dynamic_buffers.back();
-      buffer.buffer->recycle(current_seq_id, std::move(buffer.allocation));
+      if (!buffer.borrowed)
+        buffer.buffer->recycle(current_seq_id, std::move(buffer.allocation));
       used_dynamic_buffers.pop_back();
     }
     while (!used_dynamic_lineartextures.empty()) {
       auto &texture = used_dynamic_lineartextures.back();
-      texture.texture->recycle(current_seq_id, std::move(texture.allocation));
+      if (!texture.borrowed)
+        texture.texture->recycle(current_seq_id, std::move(texture.allocation));
       used_dynamic_lineartextures.pop_back();
     }
     read_staging_resources.clear();

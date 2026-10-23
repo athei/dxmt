@@ -797,6 +797,13 @@ public:
     assert(!deferred_visibility_query_stack_.empty());
     return deferred_visibility_query_stack_.back()[query_id];
   }
+  /* The queries of a command list executed by another one start at `first`
+     in the list of the outer one */
+  Rc<VisibilityResultQuery> *
+  currentDeferredVisibilityQueries(uint32_t first) {
+    assert(!deferred_visibility_query_stack_.empty());
+    return deferred_visibility_query_stack_.back() + first;
+  }
 
   void sampleTimestamp(Rc<TimestampQuery> &&query);
 
