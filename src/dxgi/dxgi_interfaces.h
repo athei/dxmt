@@ -30,6 +30,14 @@ DEFINE_COM_INTERFACE("6c030003-460a-4b19-909b-38f97d203e45",
       IDXGISwapChain1 **ppSwapChain) = 0;
 };
 
+/* DXMT's factory keeps the swap chains it created for window association and
+   Alt+Enter; a swap chain calls UnregisterSwapChain first in its destructor. */
+DEFINE_COM_INTERFACE("80b8b17e-fa06-484e-b0b6-0aa4391aab52",
+                     IMTLDXGIFactoryPrivate)
+    : public IUnknown {
+  virtual void STDMETHODCALLTYPE UnregisterSwapChain(IDXGISwapChain * pSwapChain) = 0;
+};
+
 static constexpr IID DXMT_NVEXT_GUID = dxmt::guid::make_guid("ba0af616-4a43-4259-815c-db3b89829905");
 
 namespace dxmt {

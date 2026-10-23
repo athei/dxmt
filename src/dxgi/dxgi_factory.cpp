@@ -9,6 +9,9 @@
 #include "util_string.hpp"
 #include "wsi_window.hpp"
 #include "Metal.hpp"
+#include "thread.hpp"
+#include <mutex>
+#include <vector>
 
 namespace dxmt {
 
@@ -39,10 +42,256 @@ bool ValidateSwapChainFullscreenDesc(const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDes
   return true;
 }
 
+/* Window association and Alt+Enter, after Wine's wined3d_register_window and
+   wined3d_hook_proc. MakeWindowAssociation records flags per window and
+   factory. The factory records each swap chain it creates with its window,
+   and a hook on the window's thread (dxgi.altEnterHook) toggles the swap
+   chain's fullscreen state on Alt+Enter, unless the window is associated
+   with that swap chain's factory with DXGI_MWA_NO_WINDOW_CHANGES or
+   DXGI_MWA_NO_ALT_ENTER. Nothing replaces the window procedure. */
+namespace {
+
+struct WindowAssociation {
+  HWND window;
+  const void *factory;
+  UINT flags;
+};
+
+struct AssociatedSwapChain {
+  HWND window;
+  IDXGISwapChain *swapchain;
+  const void *factory;
+  DWORD thread_id;
+};
+
+struct MessageHook {
+  DWORD thread_id;
+  /* tells a thread that exited, whose ID a new thread may reuse */
+  HANDLE thread;
+  HHOOK hook;
+  UINT count;
+};
+
+struct WindowAssociationTable {
+  dxmt::mutex mutex;
+  std::vector<WindowAssociation> associations;
+  std::vector<AssociatedSwapChain> swapchains;
+  std::vector<MessageHook> hooks;
+};
+
+/* Never destroyed: a swap chain released while DLLs detach at process exit
+   still unregisters itself here. */
+WindowAssociationTable &
+GetWindowAssociationTable() {
+  static WindowAssociationTable *table = new WindowAssociationTable;
+  return *table;
+}
+
+void
+ToggleFullscreenOnAltEnter(HWND hWnd) {
+  auto &table = GetWindowAssociationTable();
+  Com<IDXGISwapChain> swapchain;
+  {
+    std::lock_guard<dxmt::mutex> lock(table.mutex);
+    for (auto &entry : table.swapchains) {
+      if (entry.window != hWnd)
+        continue;
+
+      UINT flags = 0;
+      for (auto &association : table.associations) {
+        if (association.window == entry.window && association.factory == entry.factory)
+          flags = association.flags;
+      }
+      if (flags & (DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER))
+        continue;
+
+      // A swap chain whose last reference is gone is being destroyed and
+      // waits for the lock to unregister; the extra reference is then
+      // dropped again without a second destruction
+      if (entry.swapchain->AddRef() == 1) {
+        entry.swapchain->Release();
+        continue;
+      }
+      swapchain = Com<IDXGISwapChain>::transfer(entry.swapchain);
+      break;
+    }
+  }
+
+  // Without the lock: the fullscreen change sends messages to the window,
+  // whose procedure may create or release swap chains, or wait for a thread
+  // that registers one
+  if (swapchain != nullptr) {
+    BOOL fullscreen = FALSE;
+    swapchain->GetFullscreenState(&fullscreen, nullptr);
+    swapchain->SetFullscreenState(!fullscreen, nullptr);
+  }
+}
+
+/* WH_GETMESSAGE sees every message the thread retrieves, posted ones too,
+   as Wine's wined3d_hook_proc does, which costs server calls and a callback
+   per message. */
+LRESULT CALLBACK
+AltEnterMessageHookProc(int code, WPARAM wparam, LPARAM lparam) {
+  auto msg = reinterpret_cast<const MSG *>(lparam);
+
+  // Only the message being removed from the queue, so a message that is
+  // first peeked at and then retrieved toggles once
+  if (code == HC_ACTION && wparam == PM_REMOVE && msg->message == WM_SYSKEYDOWN && msg->wParam == VK_RETURN &&
+      (msg->lParam & (KF_ALTDOWN << 16)) && !(msg->lParam & (KF_REPEAT << 16)))
+    ToggleFullscreenOnAltEnter(msg->hwnd);
+
+  return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+/* WH_KEYBOARD is called only for keyboard input the thread retrieves, so
+   other messages cost nothing; posted key messages do not reach it. */
+LRESULT CALLBACK
+AltEnterKeyboardHookProc(int code, WPARAM wparam, LPARAM lparam) {
+  WORD flags = HIWORD(lparam);
+
+  // HC_ACTION: the message is being removed from the queue
+  if (code == HC_ACTION && wparam == VK_RETURN && (flags & KF_ALTDOWN) && !(flags & (KF_UP | KF_REPEAT)))
+    ToggleFullscreenOnAltEnter(GetFocus());
+
+  return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+enum class AltEnterHook { Keyboard, Message, Off };
+
+/* dxgi.altEnterHook: keyboard (default), message or off */
+AltEnterHook
+GetAltEnterHook() {
+  static const AltEnterHook hook = [] {
+    auto value = Config::getInstance().getOption<std::string>("dxgi.altEnterHook", "keyboard");
+    if (value == "message")
+      return AltEnterHook::Message;
+    if (value == "off")
+      return AltEnterHook::Off;
+    if (value != "keyboard")
+      WARN("DXGI: Unknown dxgi.altEnterHook value ", value, ", using keyboard");
+    return AltEnterHook::Keyboard;
+  }();
+  return hook;
+}
+
+void
+RegisterSwapChainWindow(HWND hWnd, IDXGISwapChain *pSwapChain, const void *pFactory) {
+  auto &table = GetWindowAssociationTable();
+  std::lock_guard<dxmt::mutex> lock(table.mutex);
+
+  DWORD thread_id = GetWindowThreadProcessId(hWnd, nullptr);
+  table.swapchains.push_back({hWnd, pSwapChain, pFactory, thread_id});
+
+  MessageHook *hook = nullptr;
+  for (auto &entry : table.hooks) {
+    if (entry.thread_id == thread_id) {
+      hook = &entry;
+      break;
+    }
+  }
+
+  // A thread that exited took its hook with it, and its ID may now belong
+  // to the window's thread
+  if (hook && hook->thread && WaitForSingleObject(hook->thread, 0) == WAIT_OBJECT_0) {
+    CloseHandle(hook->thread);
+    hook->thread = OpenThread(SYNCHRONIZE, FALSE, thread_id);
+    hook->hook = nullptr;
+  }
+
+  if (!hook) {
+    table.hooks.push_back({thread_id, OpenThread(SYNCHRONIZE, FALSE, thread_id), nullptr, 0});
+    hook = &table.hooks.back();
+  }
+  hook->count++;
+
+  // Also retried for a hook that failed before
+  AltEnterHook type = GetAltEnterHook();
+  if (!hook->hook && type != AltEnterHook::Off) {
+    hook->hook = type == AltEnterHook::Message
+                     ? SetWindowsHookExW(WH_GETMESSAGE, AltEnterMessageHookProc, nullptr, thread_id)
+                     : SetWindowsHookExW(WH_KEYBOARD, AltEnterKeyboardHookProc, nullptr, thread_id);
+    if (!hook->hook)
+      WARN("DXGIFactory: Failed to hook the messages of thread ", thread_id, " for Alt+Enter");
+  }
+}
+
+void
+UnregisterSwapChainWindow(IDXGISwapChain *pSwapChain) {
+  auto &table = GetWindowAssociationTable();
+  std::lock_guard<dxmt::mutex> lock(table.mutex);
+
+  for (auto entry = table.swapchains.begin(); entry != table.swapchains.end(); ++entry) {
+    if (entry->swapchain != pSwapChain)
+      continue;
+
+    for (auto hook = table.hooks.begin(); hook != table.hooks.end(); ++hook) {
+      if (hook->thread_id == entry->thread_id) {
+        if (!--hook->count) {
+          if (hook->hook)
+            UnhookWindowsHookEx(hook->hook);
+          if (hook->thread)
+            CloseHandle(hook->thread);
+          table.hooks.erase(hook);
+        }
+        break;
+      }
+    }
+    table.swapchains.erase(entry);
+    return;
+  }
+}
+
+void
+AssociateWindow(HWND hWnd, const void *pFactory, UINT Flags) {
+  auto &table = GetWindowAssociationTable();
+  std::lock_guard<dxmt::mutex> lock(table.mutex);
+
+  for (auto &association : table.associations) {
+    if (association.window == hWnd && association.factory == pFactory) {
+      association.flags = Flags;
+      return;
+    }
+  }
+  table.associations.push_back({hWnd, pFactory, Flags});
+}
+
+void
+UnassociateWindows(const void *pFactory) {
+  auto &table = GetWindowAssociationTable();
+  std::lock_guard<dxmt::mutex> lock(table.mutex);
+
+  std::erase_if(table.associations, [pFactory](const WindowAssociation &association) {
+    return association.factory == pFactory;
+  });
+}
+
+} // namespace
+
 class MTLDXGIFactory : public MTLDXGIObject<IDXGIFactory6> {
 
+  /* aggregated, like MTLDXGIResource */
+  class FactoryPrivate : public IMTLDXGIFactoryPrivate {
+  public:
+    FactoryPrivate(MTLDXGIFactory *pFactory) : factory_(pFactory) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) final {
+      return factory_->QueryInterface(riid, ppvObject);
+    }
+    ULONG STDMETHODCALLTYPE AddRef() final { return factory_->AddRef(); }
+    ULONG STDMETHODCALLTYPE Release() final { return factory_->Release(); }
+
+    void STDMETHODCALLTYPE UnregisterSwapChain(IDXGISwapChain *pSwapChain) final {
+      UnregisterSwapChainWindow(pSwapChain);
+    }
+
+  private:
+    MTLDXGIFactory *factory_;
+  };
+
 public:
-  MTLDXGIFactory(UINT Flags) : flags_(Flags) {};
+  MTLDXGIFactory(UINT Flags) : flags_(Flags), private_(this) {};
+
+  ~MTLDXGIFactory() { UnassociateWindows(this); }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
@@ -57,6 +306,11 @@ public:
         riid == __uuidof(IDXGIFactory3) || riid == __uuidof(IDXGIFactory4) ||
         riid == __uuidof(IDXGIFactory5) || riid == __uuidof(IDXGIFactory6)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IMTLDXGIFactoryPrivate)) {
+      *ppvObject = ref(&private_);
       return S_OK;
     }
 
@@ -167,12 +421,17 @@ public:
       fsDesc.Windowed = TRUE;
     }
 
+    HRESULT hr;
     if (vk_swapchain_factory != nullptr)
-      return CreateDXGIVkSwapChain(this, vk_swapchain_factory.ptr(), pDevice,
-                                   hWnd, &desc, &fsDesc, ppSwapChain);
-
-    return swapchain_factory->CreateSwapChain(this, hWnd, &desc, &fsDesc,
+      hr = CreateDXGIVkSwapChain(this, vk_swapchain_factory.ptr(), pDevice,
+                                 hWnd, &desc, &fsDesc, ppSwapChain);
+    else
+      hr = swapchain_factory->CreateSwapChain(this, hWnd, &desc, &fsDesc,
                                               ppSwapChain);
+
+    if (SUCCEEDED(hr) && *ppSwapChain)
+      RegisterSwapChainWindow(hWnd, *ppSwapChain, this);
+    return hr;
   }
 
   DXMT_HOTPATCHABLE
@@ -242,7 +501,9 @@ public:
     if (pWindowHandle == nullptr)
       return DXGI_ERROR_INVALID_CALL;
 
-    *pWindowHandle = associated_window_;
+    // Windows returns no window even after MakeWindowAssociation, as Wine's
+    // dxgi tests show
+    *pWindowHandle = nullptr;
     return S_OK;
   }
 
@@ -254,10 +515,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE MakeWindowAssociation(HWND WindowHandle,
                                                   UINT Flags) final {
-    if (Flags) {
-      WARN("MakeWindowAssociation: Ignoring flags ", Flags);
-    }
-    associated_window_ = WindowHandle;
+    if (Flags > DXGI_MWA_VALID)
+      return DXGI_ERROR_INVALID_CALL;
+
+    // No window removes all associations of this factory
+    if (!WindowHandle)
+      UnassociateWindows(this);
+    else
+      AssociateWindow(WindowHandle, this, Flags);
     return S_OK;
   }
 
@@ -374,8 +639,7 @@ public:
 
 private:
   UINT flags_;
-
-  HWND associated_window_ = nullptr;
+  FactoryPrivate private_;
 };
 
 extern "C" HRESULT __stdcall CreateDXGIFactory2(UINT Flags, REFIID riid,
