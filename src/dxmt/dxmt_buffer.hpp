@@ -100,6 +100,11 @@ public:
     return flags_;
   }
 
+  WMTResourceOptions
+  options() const {
+    return info_.options;
+  }
+
   void *
   mappedMemory(uint32_t sub) const noexcept {
     return reinterpret_cast<void *>(reinterpret_cast<std::uintptr_t>(mappedMemory_) + sub * suballocation_size_);
