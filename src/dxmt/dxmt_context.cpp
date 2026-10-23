@@ -47,9 +47,11 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   dummy_sampler_info_.r_address_mode = WMTSamplerAddressModeClampToEdge;
   dummy_sampler_info_.s_address_mode = WMTSamplerAddressModeClampToEdge;
   dummy_sampler_info_.t_address_mode = WMTSamplerAddressModeClampToEdge;
-  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterNearest;
-  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterNearest;
-  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterNotMipmapped;
+  // an unbound sampler samples as D3D11's default sampler state, with
+  // D3D11_FILTER_MIN_MAG_MIP_LINEAR
+  dummy_sampler_info_.min_filter = WMTSamplerMinMagFilterLinear;
+  dummy_sampler_info_.mag_filter = WMTSamplerMinMagFilterLinear;
+  dummy_sampler_info_.mip_filter = WMTSamplerMipFilterLinear;
   dummy_sampler_info_.lod_min_clamp = 0.0f;
   dummy_sampler_info_.lod_max_clamp = FLT_MAX;
   dummy_sampler_info_.max_anisotroy = 1;
