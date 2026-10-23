@@ -504,6 +504,11 @@ public:
 
     if (DstFormat.PixelFormat == WMTPixelFormatInvalid || DstFormat.BytesPerTexel == 0)
       return;
+    // D24_UNORM_S8_UINT and D32_FLOAT_S8X24_UINT have a texel size only for
+    // their staging layout; a plain blit cannot write the Metal depth stencil
+    // texture, and depth stencil resources cannot be updated on Windows
+    if ((DstFormat.Flag & MTL_DXGI_FORMAT_EMULATED_LINEAR_DEPTH_STENCIL) && !(DstFormat.Flag & MTL_DXGI_FORMAT_TYPELESS))
+      return;
 
     switch (Dst_.Dimension) {
     default: {
