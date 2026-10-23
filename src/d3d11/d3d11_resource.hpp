@@ -142,6 +142,8 @@ struct D3D11ResourceCommon : ID3D11Resource {
   uint32_t bind_flags_{};
   D3D11_USAGE usage_{};
   uint32_t cpu_access_flags_{};
+  /* the DXGI usage of a swap chain's back buffer, 0 for other resources */
+  DXGI_USAGE swapchain_usage_{};
   Rc<KeyedMutex> keyed_mutex_{};
 
   const Rc<Buffer> &buffer() const {
@@ -322,7 +324,19 @@ public:
     if (!pUsage) {
       return E_INVALIDARG;
     }
-    *pUsage = 0;
+    // back buffers have the usage of their swap chain
+    if (this->swapchain_usage_) {
+      *pUsage = this->swapchain_usage_;
+      return S_OK;
+    }
+    DXGI_USAGE usage = 0;
+    if (this->bind_flags_ & D3D11_BIND_RENDER_TARGET)
+      usage |= DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    if (this->bind_flags_ & D3D11_BIND_SHADER_RESOURCE)
+      usage |= DXGI_USAGE_SHADER_INPUT;
+    if (this->bind_flags_ & D3D11_BIND_UNORDERED_ACCESS)
+      usage |= DXGI_USAGE_UNORDERED_ACCESS;
+    *pUsage = usage;
     return S_OK;
   }
 
