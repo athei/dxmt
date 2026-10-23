@@ -18,6 +18,7 @@
 #include "com/com_guid.hpp"
 #include "com/com_pointer.hpp"
 #include "config/config.hpp"
+#include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
 #include "dxgi_options.hpp"
 #include "dxgi_vk_interfaces.h"
@@ -193,6 +194,11 @@ public:
   };
 
   ~MTLDXGIVkSwapChain() {
+    // First, so that Alt+Enter no longer reaches this swap chain
+    Com<IMTLDXGIFactoryPrivate> factory_private;
+    if (SUCCEEDED(factory_->QueryInterface(IID_PPV_ARGS(&factory_private))))
+      factory_private->UnregisterSwapChain(this);
+
     // A swap chain released in fullscreen mode restores the display mode and
     // the window, as wined3d does
     if (!fullscreen_desc_.Windowed) {
