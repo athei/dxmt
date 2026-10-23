@@ -185,7 +185,9 @@ public:
       case D3D11_MAP_WRITE_NO_OVERWRITE: {
         auto ret = ctx_state.current_dynamic_buffer_allocations.find(dynamic.ptr());
         if (ret == ctx_state.current_dynamic_buffer_allocations.end()) {
-          ERR("DeferredContext: Invalid NO_OVERWRITE map on deferred context occurs without any prior DISCARD map.");
+          // UpdateSubresource1 copies with a blit then, which is not an error
+          if (!mapping_for_update_)
+            ERR("DeferredContext: Invalid NO_OVERWRITE map on deferred context occurs without any prior DISCARD map.");
           return E_INVALIDARG;
         }
         auto &allocation_state = ret->second;
@@ -409,8 +411,73 @@ public:
 
   void
   STDMETHODCALLTYPE
-  ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override{
-    UNIMPLEMENTED("ExecuteCommandList on deferred context");
+  ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override {
+    if (unlikely(!pCommandList))
+      return;
+
+    ResetEncodingContextState();
+
+    // Record the command list into the current one: its commands run when
+    // this one runs, and what the immediate context does for a command list
+    // it executes (queries, staging resources, names of dynamic resources)
+    // is carried over, in recording order
+    Com<MTLD3D11CommandList, false> cmdlist = static_cast<MTLD3D11CommandList *>(pCommandList);
+    auto &current = ctx_state.current_cmdlist;
+
+    promote_flush = promote_flush || cmdlist->promote_flush;
+
+    auto first_query = current->visibility_query_count;
+    for (const auto &[query, index] : cmdlist->issued_visibility_query)
+      current->issued_visibility_query.push_back({query, first_query + index});
+    current->visibility_query_count += cmdlist->visibility_query_count;
+
+    for (const auto &query : cmdlist->issued_event_query)
+      current->issued_event_query.push_back(query);
+    for (const auto &query : cmdlist->issued_timestamp_query)
+      current->issued_timestamp_query.push_back(query);
+    for (const auto &staging : cmdlist->read_staging_resources)
+      current->read_staging_resources.push_back(staging);
+    for (const auto &staging : cmdlist->written_staging_resources)
+      current->written_staging_resources.push_back(staging);
+
+    // The executed command list recycles these when it is reset, and it is
+    // kept until this one is reset. A resource it renamed is no longer on
+    // the allocation this context mapped before, so the next map here must
+    // rename it again: forget this context's allocation, which is not the
+    // latest name any more either.
+    for (const auto &used : cmdlist->used_dynamic_buffers) {
+      if (used.latest) {
+        auto mapped = ctx_state.current_dynamic_buffer_allocations.find(used.buffer.ptr());
+        if (mapped != ctx_state.current_dynamic_buffer_allocations.end()) {
+          current->used_dynamic_buffers[mapped->second.allocation_id].latest = false;
+          ctx_state.current_dynamic_buffer_allocations.erase(mapped);
+        }
+      }
+      auto copy = used;
+      copy.borrowed = true;
+      current->used_dynamic_buffers.push_back(std::move(copy));
+    }
+    for (const auto &used : cmdlist->used_dynamic_lineartextures) {
+      auto mapped = ctx_state.current_dynamic_texture_allocations.find(used.texture.ptr());
+      if (mapped != ctx_state.current_dynamic_texture_allocations.end()) {
+        current->used_dynamic_lineartextures[mapped->second.second].latest = false;
+        ctx_state.current_dynamic_texture_allocations.erase(mapped);
+      }
+      auto copy = used;
+      copy.borrowed = true;
+      current->used_dynamic_lineartextures.push_back(std::move(copy));
+    }
+
+    EmitOP([cmdlist = std::move(cmdlist), first_query](ArgumentEncodingContext &enc) {
+      enc.pushDeferredVisibilityQueries(enc.currentDeferredVisibilityQueries(first_query));
+      cmdlist->Execute(enc);
+      enc.popDeferredVisibilityQueries();
+    });
+
+    if (RestoreContextState)
+      RestoreEncodingContextState();
+    else
+      ResetD3D11ContextState();
   }
 
   HRESULT 
