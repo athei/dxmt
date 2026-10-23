@@ -329,13 +329,76 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetBuffer(UINT buffer_idx, REFIID riid, void **surface) final {
-    if (buffer_idx == 0) {
+    if (buffer_idx == 0)
       return backbuffer_->QueryInterface(riid, surface);
-    } else {
-      ERR("Non zero-index buffer is not supported");
-      return DXGI_ERROR_UNSUPPORTED;
+    // with the discard effects only buffer 0 is accessible
+    if (buffer_idx >= desc_.BufferCount || !IsSequential())
+      return DXGI_ERROR_INVALID_CALL;
+
+    std::unique_lock<d3d11_device_mutex> lock(device_->mutex);
+    if (extra_backbuffers_.empty()) {
+      // created on demand: until then Present has no buffers to rotate
+      HRESULT hr = CreateExtraBackBuffers();
+      if (FAILED(hr))
+        return hr;
     }
+    return extra_backbuffers_[buffer_idx - 1]->QueryInterface(riid, surface);
   };
+
+  /**
+  The back buffers other than buffer 0, which only an application that asks
+  for them sees. Present always shows buffer 0; with them, it also moves the
+  buffers as DXGI does for sequential swap effects: buffer 1 becomes buffer 0,
+  and buffer 0 becomes the last one.
+  */
+  HRESULT
+  CreateExtraBackBuffers() {
+    std::vector<Com<D3D11ResourceCommon, false>> buffers(desc_.BufferCount);
+    for (auto &buffer : buffers) {
+      if (FAILED(dxmt::CreateDeviceTexture2D(
+              device_, &backbuffer_desc_, nullptr, reinterpret_cast<ID3D11Texture2D1 **>(&buffer)
+          ))) {
+        // the textures created so far hold only a public reference
+        for (auto &created : buffers) {
+          if (created.ptr()) {
+            created->AddRefPrivate();
+            created->Release();
+          }
+        }
+        return E_FAIL;
+      }
+    }
+    // CreateDeviceTexture2D returns public references, change to private ones
+    for (auto &buffer : buffers) {
+      buffer->AddRefPrivate();
+      buffer->Release();
+    }
+    // the last one holds buffer 0's contents while the buffers move
+    rotation_buffer_ = std::move(buffers.back());
+    buffers.pop_back();
+    extra_backbuffers_ = std::move(buffers);
+    return S_OK;
+  }
+
+  bool
+  IsSequential() const {
+    return desc_.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL || desc_.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+  }
+
+  void
+  RotateBackBuffers() {
+    // the discard effects leave the contents undefined after Present
+    if (extra_backbuffers_.empty() || !IsSequential())
+      return;
+    auto resource = [](Com<D3D11ResourceCommon, false> &buffer) {
+      return static_cast<ID3D11Resource *>(buffer.ptr());
+    };
+    device_context_->CopyResource(resource(rotation_buffer_), resource(backbuffer_));
+    device_context_->CopyResource(resource(backbuffer_), resource(extra_backbuffers_[0]));
+    for (size_t i = 0; i + 1 < extra_backbuffers_.size(); i++)
+      device_context_->CopyResource(resource(extra_backbuffers_[i]), resource(extra_backbuffers_[i + 1]));
+    device_context_->CopyResource(resource(extra_backbuffers_.back()), resource(rotation_buffer_));
+  }
 
   DXMT_HOTPATCHABLE
   HRESULT
@@ -621,7 +684,10 @@ public:
   STDMETHODCALLTYPE
   ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format,
                 UINT flags) final {
-    /* BufferCount ignored */
+    if (BufferCount)
+      desc_.BufferCount = BufferCount;
+    extra_backbuffers_.clear();
+    rotation_buffer_ = nullptr;
     if (Width == 0 || Height == 0) {
       wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
     } else {
@@ -987,6 +1053,9 @@ public:
     }
     device_context_->Commit();
 
+    // after the present command, so that it shows buffer 0 as it was
+    RotateBackBuffers();
+
     lock.unlock(); // since PresentBoundary() will and should only stall current thread
 
     cmd_queue.PresentBoundary();
@@ -1248,6 +1317,8 @@ private:
   D3D11_TEXTURE2D_DESC1 backbuffer_desc_;
   IMTLD3D11DeviceContext* device_context_;
   Com<D3D11ResourceCommon, false> backbuffer_;
+  std::vector<Com<D3D11ResourceCommon, false>> extra_backbuffers_;
+  Com<D3D11ResourceCommon, false> rotation_buffer_;
   HANDLE present_semaphore_;
   std::unique_ptr<CpuFence> frame_latency_fence_;
   HWND hWnd;
