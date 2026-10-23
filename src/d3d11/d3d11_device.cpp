@@ -62,6 +62,56 @@ constexpr UINT kDefaultCPUAccessBufferBindFlags = D3D11_BIND_SHADER_RESOURCE | D
 constexpr UINT kDefaultCPUAccessTextureBindFlags =
     D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
 
+/* Program types in the version token of a SHDR or SHEX chunk */
+enum DXBCProgramType : uint32_t {
+  DXBC_PIXEL_SHADER = 0,
+  DXBC_VERTEX_SHADER = 1,
+  DXBC_GEOMETRY_SHADER = 2,
+  DXBC_HULL_SHADER = 3,
+  DXBC_DOMAIN_SHADER = 4,
+  DXBC_COMPUTE_SHADER = 5,
+};
+
+/* What Windows checks before it creates a shader: a DXBC container with a
+   shader program of the type asked for, of a shader model the feature level
+   has (feature level 9 needs the level_9 variant of shader model 4) */
+inline HRESULT
+ValidateShaderBytecode(
+    const void *pBytecode, SIZE_T Length, uint32_t ProgramTypeMask, D3D_FEATURE_LEVEL FeatureLevel
+) {
+  if (!pBytecode || Length < 32)
+    return E_INVALIDARG;
+  auto dwords = static_cast<const uint32_t *>(pBytecode);
+  if (memcmp(pBytecode, "DXBC", 4))
+    return E_INVALIDARG;
+  uint32_t chunk_count = dwords[7];
+  if (chunk_count > (Length - 32) / 4)
+    return E_INVALIDARG;
+  const uint32_t *version = nullptr;
+  bool level_9 = false;
+  for (uint32_t i = 0; i < chunk_count; i++) {
+    uint32_t offset = dwords[8 + i];
+    if (offset > Length - 12 || offset % 4)
+      return E_INVALIDARG;
+    auto chunk = static_cast<const char *>(pBytecode) + offset;
+    if (!memcmp(chunk, "SHDR", 4) || !memcmp(chunk, "SHEX", 4))
+      version = reinterpret_cast<const uint32_t *>(chunk + 8);
+    else if (!memcmp(chunk, "Aon9", 4))
+      level_9 = true;
+  }
+  if (!version)
+    return E_INVALIDARG;
+  uint32_t program_type = *version >> 16;
+  uint32_t major = (*version >> 4) & 0xf;
+  if (program_type > DXBC_COMPUTE_SHADER || !(ProgramTypeMask & (1u << program_type)))
+    return E_INVALIDARG;
+  if (FeatureLevel < D3D_FEATURE_LEVEL_10_0)
+    return level_9 ? S_OK : E_INVALIDARG;
+  if (major > (FeatureLevel < D3D_FEATURE_LEVEL_11_0 ? 4u : 5u))
+    return E_INVALIDARG;
+  return S_OK;
+}
+
 template <typename DESC>
 inline bool
 ValidateTextureUsage(const DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData) {
@@ -322,6 +372,9 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_VERTEX_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
+
     return pipeline_cache_->AddVertexShader(pShaderBytecode, BytecodeLength,
                                             ppVertexShader);
   }
@@ -333,6 +386,9 @@ public:
     InitReturnPtr(ppGeometryShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
+
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_GEOMETRY_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
 
     if (!ppGeometryShader)
       return S_FALSE;
@@ -379,6 +435,9 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_PIXEL_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
+
     return pipeline_cache_->AddPixelShader(pShaderBytecode, BytecodeLength,
                                            ppPixelShader);
   }
@@ -390,6 +449,9 @@ public:
     InitReturnPtr(ppHullShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
+
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_HULL_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
 
     if (!ppHullShader)
       return S_FALSE;
@@ -406,6 +468,9 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_DOMAIN_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
+
     if (!ppDomainShader)
       return S_FALSE;
 
@@ -420,6 +485,9 @@ public:
     InitReturnPtr(ppComputeShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
+
+    if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_COMPUTE_SHADER, GetFeatureLevel())))
+      return E_INVALIDARG;
 
     return pipeline_cache_->AddComputeShader(pShaderBytecode, BytecodeLength,
                                              ppComputeShader);
