@@ -9,8 +9,11 @@
 #include "dxmt_format.hpp"
 #include "dxmt_presenter.hpp"
 #include "log/log.hpp"
+#include "thread.hpp"
 #include "util_string.hpp"
 #include "wsi_monitor.hpp"
+#include <cstring>
+#include <mutex>
 
 namespace dxmt {
 
@@ -150,7 +153,13 @@ public:
     gamma_ramp_.version = 0;
   }
 
-  ~MTLDXGIOutputImpl() {}
+  ~MTLDXGIOutputImpl() {
+    if (kmt_device_) {
+      D3DKMT_DESTROYDEVICE destroy = {};
+      destroy.hDevice = kmt_device_;
+      D3DKMTDestroyDevice(&destroy);
+    }
+  }
 
   const DXMTGammaRamp *
   STDMETHODCALLTYPE
@@ -281,12 +290,45 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   TakeOwnership(IUnknown *device, BOOL exclusive) final {
-    WARN("TakeOwnership: Stub");
-    return S_OK;
+    if (!device)
+      return DXGI_ERROR_INVALID_CALL;
+
+    // As in Wine's wined3d_output_take_ownership, the output owns its video
+    // present source through a D3DKMT device of its own
+    std::lock_guard<dxmt::mutex> lock(kmt_mutex_);
+    if (!kmt_device_ && !CreateKmtDevice())
+      return E_FAIL;
+
+    D3DKMT_VIDPNSOURCEOWNER_TYPE type = exclusive ? D3DKMT_VIDPNSOURCEOWNER_EXCLUSIVE : D3DKMT_VIDPNSOURCEOWNER_SHARED;
+    D3DKMT_SETVIDPNSOURCEOWNER owner = {};
+    owner.hDevice = kmt_device_;
+    owner.pType = &type;
+    owner.pVidPnSourceId = &vidpn_source_id_;
+    owner.VidPnSourceCount = 1;
+    NTSTATUS status = D3DKMTSetVidPnSourceOwner(&owner);
+    switch (status) {
+    case 0:
+      return S_OK;
+    case NTSTATUS(0xC01E0342): // STATUS_GRAPHICS_VIDPN_SOURCE_IN_USE
+      return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+    case NTSTATUS(0xC000000D): // STATUS_INVALID_PARAMETER
+      return E_INVALIDARG;
+    case NTSTATUS(0xC000007A): // STATUS_PROCEDURE_NOT_FOUND
+      return E_NOINTERFACE;
+    default:
+      WARN("DXGIOutput::TakeOwnership: D3DKMTSetVidPnSourceOwner failed with ", status);
+      return E_FAIL;
+    }
   }
 
   void STDMETHODCALLTYPE ReleaseOwnership() final {
-    WARN("ReleaseOwnership: Stub");
+    std::lock_guard<dxmt::mutex> lock(kmt_mutex_);
+    if (!kmt_device_)
+      return;
+
+    D3DKMT_SETVIDPNSOURCEOWNER owner = {};
+    owner.hDevice = kmt_device_;
+    D3DKMTSetVidPnSourceOwner(&owner);
   }
 
   HRESULT
@@ -634,7 +676,42 @@ public:
   }
 
 private:
+  bool CreateKmtDevice() {
+    DXGI_OUTPUT_DESC desc;
+    if (FAILED(GetDesc(&desc)))
+      return false;
+
+    D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME open = {};
+    static_assert(sizeof(open.DeviceName) == sizeof(desc.DeviceName));
+    memcpy(open.DeviceName, desc.DeviceName, sizeof(open.DeviceName));
+    if (D3DKMTOpenAdapterFromGdiDisplayName(&open)) {
+      WARN("DXGIOutput: Failed to open the D3DKMT adapter of the output");
+      return false;
+    }
+    D3DKMT_CLOSEADAPTER close = {};
+    close.hAdapter = open.hAdapter;
+    D3DKMTCloseAdapter(&close);
+
+    D3DKMT_CREATEDEVICE create = {};
+    create.hAdapter = adapter_->GetLocalD3DKMT();
+    if (!create.hAdapter || D3DKMTCreateDevice(&create)) {
+      WARN("DXGIOutput: Failed to create a D3DKMT device");
+      return false;
+    }
+
+    kmt_device_ = create.hDevice;
+    vidpn_source_id_ = open.VidPnSourceId;
+    return true;
+  }
+
   Com<IMTLDXGIAdapter> adapter_ = nullptr;
+  /* created on the first TakeOwnership; destroying it releases ownership.
+     Ownership belongs to this output object, and EnumOutputs creates a new
+     one each time, where Wine keeps one per adapter output. The owner table
+     in win32u is local to the process, so that only matters within it. */
+  dxmt::mutex kmt_mutex_;
+  D3DKMT_HANDLE kmt_device_ = 0;
+  D3DDDI_VIDEO_PRESENT_SOURCE_ID vidpn_source_id_ = 0;
   HMONITOR monitor_ = nullptr;
   WMTDisplayDescription native_desc_;
   DxgiOptions &options_;
