@@ -56,7 +56,14 @@ template <typename Task> task_scheduler<Task>::task_scheduler() {
 }
 
 template <typename Task> task_scheduler<Task>::~task_scheduler() {
-  destroyed.store(true);
+  {
+    // A worker checks `destroyed` with worker_mutex_ held and then sleeps on
+    // worker_cond_, which releases the mutex. Setting the flag without the
+    // mutex can fall between the two, and the notification then reaches no
+    // waiter: the worker sleeps forever and join() below never returns.
+    std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+    destroyed.store(true);
+  }
   worker_cond_.notify_all();
 
   for (auto &worker : workers_) {
