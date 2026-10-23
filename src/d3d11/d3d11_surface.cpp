@@ -104,71 +104,44 @@ D3D11DXGISurface::GetDesc(DXGI_SURFACE_DESC *pDesc) {
   d3d11_resource->GetDesc(&desc);
   d3d11_resource->GetType(&dimension);
 
-  if (surface_from_subresource_) {
-    if (d3d11_resource->texture()) {
-      switch (dimension) {
-      case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
-        pDesc->Width = std::max(1u, desc.Texture1D.Width >> (subresource_ % desc.Texture1D.MipLevels));
-        pDesc->Height = 1U;
-        pDesc->Format = desc.Texture1D.Format;
-        pDesc->SampleDesc = {1, 0};
-        break;
-      }
-      case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
-        pDesc->Width = std::max(1u, desc.Texture2D.Width >> (subresource_ % desc.Texture2D.MipLevels));
-        pDesc->Height = std::max(1u, desc.Texture2D.Height >> (subresource_ % desc.Texture2D.MipLevels));
-        pDesc->Format = desc.Texture2D.Format;
-        pDesc->SampleDesc = desc.Texture2D.SampleDesc;
-        break;
-      }
-      case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
-        pDesc->Width = std::max(1u, desc.Texture3D.Width >> (subresource_ % desc.Texture3D.MipLevels));
-        pDesc->Height = std::max(1u, desc.Texture3D.Height >> (subresource_ % desc.Texture3D.MipLevels));
-        pDesc->Format = desc.Texture3D.Format;
-        pDesc->SampleDesc = {1, 0};
-        break;
-      }
-      default:
-        return DXGI_ERROR_INVALID_CALL;
-      }
-      return S_OK;
-    } else if (d3d11_resource->buffer()) {
-      pDesc->Width = desc.Buffer.ByteWidth;
-      pDesc->Height = 1;
-      pDesc->Format = DXGI_FORMAT_UNKNOWN;
-      pDesc->SampleDesc = {1, 0};
-      return S_OK;
-    } else {
-      return DXGI_ERROR_INVALID_CALL;
-    }
-  } else if (d3d11_resource->texture()) {
-    switch (dimension) {
-    case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
-      pDesc->Width = desc.Texture1D.Width;
-      pDesc->Height = 1U;
-      pDesc->Format = desc.Texture1D.Format;
-      pDesc->SampleDesc = {1, 0};
-      break;
-    }
-    case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
-      pDesc->Width = desc.Texture2D.Width;
-      pDesc->Height = desc.Texture2D.Height;
-      pDesc->Format = desc.Texture2D.Format;
-      pDesc->SampleDesc = desc.Texture2D.SampleDesc;
-      break;
-    }
-    case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
-      pDesc->Width = desc.Texture3D.Width;
-      pDesc->Height = desc.Texture3D.Height;
-      pDesc->Format = desc.Texture3D.Format;
-      pDesc->SampleDesc = {1, 0};
-      break;
-    }
-    default:
-      return DXGI_ERROR_INVALID_CALL;
-    }
+  // Decide by the resource dimension: staging resources have no Metal texture
+  // or buffer behind them, but their surfaces have a description all the same.
+  // A surface of a whole resource reports mip level 0.
+  switch (dimension) {
+  case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+    UINT level = surface_from_subresource_ ? subresource_ % desc.Texture1D.MipLevels : 0;
+    pDesc->Width = std::max(1u, desc.Texture1D.Width >> level);
+    pDesc->Height = 1U;
+    pDesc->Format = desc.Texture1D.Format;
+    pDesc->SampleDesc = {1, 0};
     return S_OK;
-  } else {
+  }
+  case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+    UINT level = surface_from_subresource_ ? subresource_ % desc.Texture2D.MipLevels : 0;
+    pDesc->Width = std::max(1u, desc.Texture2D.Width >> level);
+    pDesc->Height = std::max(1u, desc.Texture2D.Height >> level);
+    pDesc->Format = desc.Texture2D.Format;
+    pDesc->SampleDesc = desc.Texture2D.SampleDesc;
+    return S_OK;
+  }
+  case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+    UINT level = surface_from_subresource_ ? subresource_ % desc.Texture3D.MipLevels : 0;
+    pDesc->Width = std::max(1u, desc.Texture3D.Width >> level);
+    pDesc->Height = std::max(1u, desc.Texture3D.Height >> level);
+    pDesc->Format = desc.Texture3D.Format;
+    pDesc->SampleDesc = {1, 0};
+    return S_OK;
+  }
+  case D3D11_RESOURCE_DIMENSION_BUFFER:
+    // Only a subresource surface describes a buffer.
+    if (!surface_from_subresource_)
+      return DXGI_ERROR_INVALID_CALL;
+    pDesc->Width = desc.Buffer.ByteWidth;
+    pDesc->Height = 1;
+    pDesc->Format = DXGI_FORMAT_UNKNOWN;
+    pDesc->SampleDesc = {1, 0};
+    return S_OK;
+  default:
     return DXGI_ERROR_INVALID_CALL;
   }
 }
