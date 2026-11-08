@@ -34,9 +34,21 @@ else
   error('One of the options -Dwine_build_path or -Dwine_install_path is required')
 endif
 
+# winemetal takes only the unix call setup (unix_lib.o) from winecrt0. An
+# ARM64EC image gets its CHPE metadata from libmingwex's chpe.o, which also
+# defines __icall_helper_arm64ec. Since Wine 11.21 winebuild generates the CHPE
+# metadata and winecrt0's arm64ec.o defines only __icall_helper_arm64ec, so with
+# winecrt0 searched first both are linked and the symbol is defined twice.
+# Search libmingwex first: chpe.o is then the only provider, as for the DLLs
+# that do not link winecrt0.
+winemetal_crt_deps = []
+if cpu_family == 'aarch64'
+  winemetal_crt_deps += cc.find_library('mingwex')
+endif
+
 winemetal_dll = shared_library('winemetal', winemetal_src,
   name_prefix         : '',
-  dependencies        : [ lib_winecrt0, lib_ntdll, lib_dbghelp, airconv_forward_dep ],
+  dependencies        : [ winemetal_crt_deps, lib_winecrt0, lib_ntdll, lib_dbghelp, airconv_forward_dep ],
   include_directories : dxmt_include_path,
   install             : true,
   install_dir         : windows_builtin_install_dir,
