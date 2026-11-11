@@ -314,9 +314,16 @@ CreateMTLTextureDescriptorInternal(
     return E_FAIL;
   }
 
+  // Sharing needs feature level 10_0 and exactly one of the two sharing
+  // types, also for an NT handle
   auto shared_flag = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-  if ((MiscFlags & shared_flag) == shared_flag) // check mutually exclusive flags
-    return E_INVALIDARG;
+  if (MiscFlags & (shared_flag | D3D11_RESOURCE_MISC_SHARED_NTHANDLE)) {
+    if (pDevice->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
+      return E_INVALIDARG;
+    auto sharing_type = MiscFlags & shared_flag;
+    if (sharing_type != D3D11_RESOURCE_MISC_SHARED && sharing_type != D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+      return E_INVALIDARG;
+  }
 
   if (BindFlags & D3D11_BIND_DEPTH_STENCIL) {
     switch (Format) {

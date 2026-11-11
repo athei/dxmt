@@ -307,7 +307,7 @@ public:
   CreateSharedHandle(const SECURITY_ATTRIBUTES *Attributes, DWORD Access, const WCHAR *pName, HANDLE *pNTHandle)
       override {
     InitReturnPtr(pNTHandle);
-    if (!local_kmt_)
+    if (!local_kmt_ || !(this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE))
       return E_INVALIDARG;
 
     OBJECT_ATTRIBUTES attr = {};
