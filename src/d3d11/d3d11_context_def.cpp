@@ -498,7 +498,11 @@ public:
     ctx_state.current_dynamic_buffer_allocations.clear();
     ctx_state.current_dynamic_texture_allocations.clear();
 
-    *ppCommandList = std::move(ctx_state.current_cmdlist);
+    // Without a pointer to return it in, Windows drops the command list
+    if (ppCommandList)
+      *ppCommandList = std::move(ctx_state.current_cmdlist);
+    else
+      ctx_state.current_cmdlist = nullptr;
     device->CreateCommandList((ID3D11CommandList **)&ctx_state.current_cmdlist);
 
     if (RestoreDeferredContextState)
@@ -506,7 +510,7 @@ public:
     else
       ResetD3D11ContextState();
 
-    return S_OK;
+    return ppCommandList ? S_OK : E_UNEXPECTED;
   }
 
   D3D11_DEVICE_CONTEXT_TYPE 
