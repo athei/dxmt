@@ -904,7 +904,7 @@ MTLD3D10Device::CreateRenderTargetView(
   if (!pResource)
     return E_INVALIDARG;
 
-  ID3D11RenderTargetView *d3d11_view = nullptr;
+  Com<ID3D11RenderTargetView> d3d11_view;
   HRESULT hr = d3d11_device_->CreateRenderTargetView(
       /* compatible memory layout to MTLD3D10Texture1/2/3D */
       GetD3D11Interface<MTLD3D10Buffer>(pResource), reinterpret_cast<const D3D11_RENDER_TARGET_VIEW_DESC *>(pDesc),
