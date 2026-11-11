@@ -1044,7 +1044,15 @@ MTLD3D10Device::CreateGeometryShaderWithStreamOutput(
 ) {
   InitReturnPtr(ppGeometryShader);
 
+  if (NumEntries && !pSODeclaration)
+    return E_INVALIDARG;
+  // OutputStreamStride is the stride of output slot 0, and must be 0 without
+  // a declaration or when the declaration writes other slots
+  if (!NumEntries && OutputStreamStride)
+    return E_INVALIDARG;
+
   std::vector<D3D11_SO_DECLARATION_ENTRY> entries(NumEntries);
+  UINT num_strides = NumEntries ? 1 : 0;
 
   for (unsigned i = 0; i < NumEntries; i++) {
     entries[i].Stream = 0;
@@ -1053,13 +1061,18 @@ MTLD3D10Device::CreateGeometryShaderWithStreamOutput(
     entries[i].StartComponent = pSODeclaration[i].StartComponent;
     entries[i].ComponentCount = pSODeclaration[i].ComponentCount;
     entries[i].OutputSlot = pSODeclaration[i].OutputSlot;
+    if (entries[i].OutputSlot) {
+      if (OutputStreamStride)
+        return E_INVALIDARG;
+      num_strides = 0;
+    }
   }
 
   Com<ID3D11GeometryShader> d3d11_shader = nullptr;
 
-  HRESULT hr = d3d11_device_->CreateGeometryShaderWithStreamOutput(
-      pShaderBytecode, BytecodeLength, entries.data(), entries.size(), &OutputStreamStride, 1,
-      D3D11_SO_NO_RASTERIZED_STREAM, nullptr, ppGeometryShader ? &d3d11_shader : nullptr
+  HRESULT hr = d3d11_device_->CreateGeometryShaderWithStreamOutputD3D10(
+      pShaderBytecode, BytecodeLength, NumEntries ? entries.data() : nullptr, NumEntries, &OutputStreamStride,
+      num_strides, ppGeometryShader ? &d3d11_shader : nullptr
   );
 
   if (hr != S_OK)

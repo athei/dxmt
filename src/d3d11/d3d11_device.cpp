@@ -112,6 +112,35 @@ ValidateShaderBytecode(
   return S_OK;
 }
 
+/* Whether the bytecode is a DXBC container with an output signature and no
+   shader program, as D3DGetOutputSignatureBlob returns it */
+inline bool
+IsOutputSignatureBlob(const void *pBytecode, SIZE_T Length) {
+  if (!pBytecode || Length < 32)
+    return false;
+  auto dwords = static_cast<const uint32_t *>(pBytecode);
+  if (memcmp(pBytecode, "DXBC", 4))
+    return false;
+  // The signature is read within the container size of the header
+  if (dwords[6] > Length)
+    return false;
+  uint32_t chunk_count = dwords[7];
+  if (chunk_count > (Length - 32) / 4)
+    return false;
+  bool signature = false;
+  for (uint32_t i = 0; i < chunk_count; i++) {
+    uint32_t offset = dwords[8 + i];
+    if (offset > Length - 8 || offset % 4)
+      return false;
+    auto chunk = static_cast<const char *>(pBytecode) + offset;
+    if (!memcmp(chunk, "SHDR", 4) || !memcmp(chunk, "SHEX", 4) || !memcmp(chunk, "DXIL", 4))
+      return false;
+    if (!memcmp(chunk, "OSGN", 4) || !memcmp(chunk, "OSG5", 4) || !memcmp(chunk, "OSG1", 4))
+      signature = true;
+  }
+  return signature;
+}
+
 template <typename DESC>
 inline bool
 ValidateTextureUsage(const DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData) {
@@ -408,11 +437,71 @@ public:
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
-    if (NumEntries > 0 && RasterizedStream == D3D11_SO_NO_RASTERIZED_STREAM &&
-        ((char *)pShaderBytecode)[0] == 'D' &&
-        ((char *)pShaderBytecode)[1] == 'X' &&
-        ((char *)pShaderBytecode)[2] == 'B' &&
-        ((char *)pShaderBytecode)[3] == 'C') {
+    if (FAILED(ValidateStreamOutputShader(
+            pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream
+        )))
+      return E_INVALIDARG;
+
+    if (!ppGeometryShader)
+      return S_FALSE;
+
+    return CreateStreamOutputShader(
+        pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream,
+        ppGeometryShader
+    );
+  }
+
+  HRESULT
+  CreateGeometryShaderWithStreamOutputD3D10(
+      const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pSODeclaration,
+      UINT NumEntries, const UINT *pBufferStrides, UINT NumStrides, ID3D11GeometryShader **ppGeometryShader
+  ) override {
+    InitReturnPtr(ppGeometryShader);
+
+    if (FAILED(ValidateStreamOutputShader(
+            pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, 0
+        )))
+      return E_INVALIDARG;
+
+    if (!ppGeometryShader)
+      return S_FALSE;
+
+    // Stream output is only emulated without rasterization
+    return CreateStreamOutputShader(
+        pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides,
+        D3D11_SO_NO_RASTERIZED_STREAM, ppGeometryShader
+    );
+  }
+
+  HRESULT
+  ValidateStreamOutputShader(
+      const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pSODeclaration,
+      UINT NumEntries, const UINT *pBufferStrides, UINT NumStrides, UINT RasterizedStream
+  ) {
+    // With a declaration, stream output also takes the output of a vertex or
+    // domain shader, or only the output signature of the stage before
+    if (!NumEntries || !IsOutputSignatureBlob(pShaderBytecode, BytecodeLength)) {
+      uint32_t program_types = 1u << DXBC_GEOMETRY_SHADER;
+      if (NumEntries)
+        program_types |= (1u << DXBC_VERTEX_SHADER) | (1u << DXBC_DOMAIN_SHADER);
+      if (FAILED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, program_types, GetFeatureLevel())))
+        return E_INVALIDARG;
+    }
+    return ValidateStreamOutputDeclaration(
+        pShaderBytecode, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream, GetFeatureLevel()
+    );
+  }
+
+  HRESULT
+  CreateStreamOutputShader(
+      const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pSODeclaration,
+      UINT NumEntries, const UINT *pBufferStrides, UINT NumStrides, UINT RasterizedStream,
+      ID3D11GeometryShader **ppGeometryShader
+  ) {
+    if (!NumEntries)
+      return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
+
+    if (RasterizedStream == D3D11_SO_NO_RASTERIZED_STREAM) {
       // FIXME: ensure the input shader is a vertex shader
       WARN("Emulate stream output");
 
@@ -423,7 +512,7 @@ public:
       if (SUCCEEDED(hr))
         return so_layout->QueryInterface(IID_PPV_ARGS(ppGeometryShader));
     }
-    ERR("CreateGeometryShaderWithStreamOutput: not supported, expect problem");
+    WARN("CreateGeometryShaderWithStreamOutput: stream output not supported, expect problem");
     return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength,
                                               ppGeometryShader);
   }

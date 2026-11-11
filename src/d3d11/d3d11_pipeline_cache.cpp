@@ -362,8 +362,16 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
       return E_FAIL;
     }
     buffer.resize(num_metal_so_elements);
-    for (unsigned i = 0; i < NumStrides; i++) {
-      strides[i] = pStrides[i];
+    if (NumStrides) {
+      for (unsigned i = 0; i < std::min<UINT>(NumStrides, strides.size()); i++) {
+        strides[i] = pStrides[i];
+      }
+    } else {
+      // Without strides, each buffer's stride is the size the declaration
+      // packs into it
+      for (unsigned i = 0; i < NumEntries; i++) {
+        strides[pEntries[i].OutputSlot] += sizeof(float) * pEntries[i].ComponentCount;
+      }
     }
     MTL_STREAM_OUTPUT_DESC desc;
     memcpy(desc.Strides, strides.data(), sizeof(strides));

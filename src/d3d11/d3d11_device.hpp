@@ -36,6 +36,13 @@ public:
 
   virtual D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() = 0;
 
+  /* ID3D10Device::CreateGeometryShaderWithStreamOutput, which rasterizes
+     stream 0 */
+  virtual HRESULT CreateGeometryShaderWithStreamOutputD3D10(
+      const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pSODeclaration,
+      UINT NumEntries, const UINT *pBufferStrides, UINT NumStrides, ID3D11GeometryShader **ppGeometryShader
+  ) = 0;
+
   virtual HRESULT CreateGraphicsPipeline(MTL_GRAPHICS_PIPELINE_DESC * pDesc,
                                          MTLCompiledGraphicsPipeline *
                                              *ppPipeline) = 0;

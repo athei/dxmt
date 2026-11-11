@@ -190,6 +190,101 @@ private:
   MTLD3D10GeometryShader d3d10_;
 };
 
+/* What Windows checks of a stream output declaration besides the bytecode,
+   as Wine's d3d11 and d3d10core tests record it */
+HRESULT
+ValidateStreamOutputDeclaration(
+    const void *pShaderBytecode, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumEntries,
+    const UINT *pStrides, UINT NumStrides, UINT RasterizedStream, D3D_FEATURE_LEVEL FeatureLevel
+) {
+  using namespace microsoft;
+  if (NumEntries > D3D11_SO_STREAM_COUNT * D3D11_SO_OUTPUT_COMPONENT_COUNT)
+    return E_INVALIDARG;
+  if (!pEntries != !NumEntries)
+    return E_INVALIDARG;
+  if (NumStrides && !pStrides)
+    return E_INVALIDARG;
+  if (RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM && RasterizedStream >= D3D11_SO_STREAM_COUNT)
+    return E_INVALIDARG;
+  if (FeatureLevel < D3D_FEATURE_LEVEL_11_0 && (RasterizedStream || NumStrides > 1 || (NumStrides && !NumEntries)))
+    return E_INVALIDARG;
+  if (!NumEntries)
+    return S_OK;
+
+  CSignatureParser5 parser;
+  if (FAILED(DXBCGetOutputSignature(pShaderBytecode, &parser)))
+    return E_INVALIDARG;
+
+  for (unsigned i = 0; i < NumEntries; i++) {
+    auto &entry = pEntries[i];
+    if (entry.Stream >= D3D11_SO_STREAM_COUNT || (entry.Stream && FeatureLevel < D3D_FEATURE_LEVEL_11_0))
+      return E_INVALIDARG;
+    if (entry.OutputSlot >= D3D11_SO_BUFFER_SLOT_COUNT)
+      return E_INVALIDARG;
+    if (!entry.SemanticName) {
+      if (entry.SemanticIndex || entry.StartComponent || !entry.ComponentCount)
+        return E_INVALIDARG;
+      continue;
+    }
+    if (!entry.ComponentCount || entry.StartComponent + entry.ComponentCount > 4)
+      return E_INVALIDARG;
+    const D3D11_SIGNATURE_PARAMETER *parameters;
+    auto num_parameters = parser.Signature(entry.Stream)->GetParameters(&parameters);
+    auto output = std::find_if(parameters, parameters + num_parameters, [&](const D3D11_SIGNATURE_PARAMETER &param) {
+      return param.SemanticIndex == entry.SemanticIndex && strcasecmp(param.SemanticName, entry.SemanticName) == 0;
+    });
+    if (output == parameters + num_parameters)
+      return E_INVALIDARG;
+    // StartComponent counts from the first component the output has
+    uint32_t output_mask = output->Mask & 0xf;
+    uint32_t first_component = output_mask ? __builtin_ctz(output_mask) : 4;
+    uint32_t mask = ((1u << entry.ComponentCount) - 1) << (first_component + entry.StartComponent);
+    if ((output_mask & mask) != mask)
+      return E_INVALIDARG;
+    for (unsigned j = 0; j < i; j++) {
+      auto &other = pEntries[j];
+      if (other.SemanticName && other.Stream == entry.Stream && other.SemanticIndex == entry.SemanticIndex &&
+          strcasecmp(other.SemanticName, entry.SemanticName) == 0 &&
+          other.StartComponent < entry.StartComponent + entry.ComponentCount &&
+          entry.StartComponent < other.StartComponent + other.ComponentCount)
+        return E_INVALIDARG;
+    }
+  }
+
+  for (unsigned stream = 0; stream < D3D11_SO_STREAM_COUNT; stream++) {
+    uint32_t packed_size[D3D11_SO_BUFFER_SLOT_COUNT] = {};
+    uint32_t element_count[D3D11_SO_BUFFER_SLOT_COUNT] = {};
+    uint32_t gap_count[D3D11_SO_BUFFER_SLOT_COUNT] = {};
+    for (unsigned i = 0; i < NumEntries; i++) {
+      auto &entry = pEntries[i];
+      if (entry.Stream != stream)
+        continue;
+      packed_size[entry.OutputSlot] += sizeof(float) * entry.ComponentCount;
+      element_count[entry.OutputSlot]++;
+      if (!entry.SemanticName)
+        gap_count[entry.OutputSlot]++;
+    }
+    for (unsigned slot = 0; slot < D3D11_SO_BUFFER_SLOT_COUNT; slot++) {
+      if (!element_count[slot])
+        continue;
+      if (element_count[slot] == gap_count[slot])
+        return E_INVALIDARG;
+      if (NumStrides && (NumStrides <= slot || pStrides[slot] < packed_size[slot] || pStrides[slot] % 4))
+        return E_INVALIDARG;
+    }
+    // Below feature level 11_0, a declaration that writes several slots
+    // writes one element to each
+    if (!stream && FeatureLevel < D3D_FEATURE_LEVEL_11_0 && element_count[0] != NumEntries) {
+      for (unsigned slot = 0; slot < D3D11_SO_BUFFER_SLOT_COUNT; slot++) {
+        if (element_count[slot] > 1)
+          return E_INVALIDARG;
+      }
+    }
+  }
+
+  return S_OK;
+}
+
 HRESULT ExtractMTLStreamOutputElements(
     MTLD3D11Device *pDevice, const void *pShaderBytecode, UINT NumEntries,
     const D3D11_SO_DECLARATION_ENTRY *pEntries,
@@ -208,38 +303,16 @@ HRESULT ExtractMTLStreamOutputElements(
   for (unsigned i = 0; i < NumEntries; i++) {
     auto entry = pEntries[i];
     if (entry.Stream != 0) {
-      ERR("CreateEmulatedVertexStreamOutputShader: stream must be 0");
-      return E_INVALIDARG;
-    }
-    if (entry.OutputSlot > 3) {
-      ERR("CreateEmulatedVertexStreamOutputShader: invalid output slot ",
-          entry.OutputSlot);
+      WARN("CreateEmulatedVertexStreamOutputShader: only stream 0 supported");
       return E_INVALIDARG;
     }
     // FIXME: support more than 1 output slot
     if (entry.OutputSlot != 0) {
-      ERR("CreateEmulatedVertexStreamOutputShader: only slot 0 supported");
+      WARN("CreateEmulatedVertexStreamOutputShader: only slot 0 supported");
       return E_INVALIDARG;
-    }
-    if ((entry.ComponentCount - entry.StartComponent) < 0 ||
-        (entry.ComponentCount + entry.StartComponent) > 4) {
-      ERR("CreateEmulatedVertexStreamOutputShader: invalid components");
-      return E_INVALIDARG;
-    }
-    if ((entry.ComponentCount - entry.StartComponent) == 0) {
-      continue;
     }
     if (entry.SemanticName == nullptr) {
-      // skip hole
-      for (unsigned i = 0; i < entry.ComponentCount; i++) {
-        auto offset = offsets[entry.OutputSlot];
-        offsets[entry.OutputSlot] += sizeof(float);
-        auto component = entry.StartComponent + i;
-        pStreamOut[element_count++] = {.Register = 0xffffffff,
-                                       .Component = component,
-                                       .OutputSlot = entry.OutputSlot,
-                                       .Offset = offset};
-      }
+      offsets[entry.OutputSlot] += sizeof(float) * entry.ComponentCount;
       continue;
     }
     auto pDesc = std::find_if(
