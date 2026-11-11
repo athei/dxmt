@@ -1488,11 +1488,57 @@ public:
     if (!desc || (surface_count && !surface))
       return E_INVALIDARG;
 
-    // Creating textures for DXGI surfaces is not implemented yet
-    ERR("DXGIDevice::CreateSurface: not implemented");
     for (UINT i = 0; i < surface_count; i++)
       surface[i] = nullptr;
-    return E_NOTIMPL;
+
+    // Each surface is a 2D texture of one subresource
+    D3D11_TEXTURE2D_DESC texture_desc = {};
+    texture_desc.Width = desc->Width;
+    texture_desc.Height = desc->Height;
+    texture_desc.MipLevels = 1;
+    texture_desc.ArraySize = 1;
+    texture_desc.Format = desc->Format;
+    texture_desc.SampleDesc = desc->SampleDesc;
+    if (usage & DXGI_USAGE_RENDER_TARGET_OUTPUT)
+      texture_desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+    if (usage & DXGI_USAGE_SHADER_INPUT)
+      texture_desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+    if (usage & DXGI_USAGE_UNORDERED_ACCESS)
+      texture_desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+    switch (usage & DXGI_CPU_ACCESS_FIELD) {
+    case DXGI_CPU_ACCESS_NONE:
+      texture_desc.Usage = D3D11_USAGE_DEFAULT;
+      break;
+    case DXGI_CPU_ACCESS_DYNAMIC:
+      texture_desc.Usage = D3D11_USAGE_DYNAMIC;
+      texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+      break;
+    case DXGI_CPU_ACCESS_READ_WRITE:
+    case DXGI_CPU_ACCESS_SCRATCH:
+      texture_desc.Usage = D3D11_USAGE_STAGING;
+      texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+      break;
+    default:
+      return E_INVALIDARG;
+    }
+
+    if (shared_resource)
+      WARN("DXGIDevice::CreateSurface: Ignoring shared resource");
+
+    for (UINT i = 0; i < surface_count; i++) {
+      Com<ID3D11Texture2D> texture;
+      HRESULT hr = d3d11_device_.CreateTexture2D(&texture_desc, nullptr, &texture);
+      if (SUCCEEDED(hr))
+        hr = texture->QueryInterface(IID_PPV_ARGS(&surface[i]));
+      if (FAILED(hr)) {
+        for (UINT j = 0; j < i; j++) {
+          surface[j]->Release();
+          surface[j] = nullptr;
+        }
+        return hr;
+      }
+    }
+    return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE
