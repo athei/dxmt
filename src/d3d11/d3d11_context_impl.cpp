@@ -5288,6 +5288,12 @@ public:
       });
     }
 
+    for (const auto &[slot, entry] : state_.StreamOutput.Targets) {
+      EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.Offset](ArgumentEncodingContext &enc) mutable {
+        enc.bindStreamOutputBuffer(slot, offset, forward_rc(buffer), {});
+      });
+    }
+
     {
       RestoreEncodingContextStageState<PipelineStage::Vertex>();
       RestoreEncodingContextStageState<PipelineStage::Pixel>();

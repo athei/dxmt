@@ -536,6 +536,7 @@ public:
     resview_ = {{}};
     om_uav_ = {{}};
     cs_uav_ = {{}};
+    so_ = {{}};
   }
 
   template <PipelineKind kind> void encodeVertexBuffers(uint32_t ia_slot_mask, uint64_t argument_buffer_offset);
