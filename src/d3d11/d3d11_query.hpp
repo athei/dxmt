@@ -41,6 +41,11 @@ IsStreamOutputQuery(D3D11_QUERY query) {
   }
 }
 
+struct MTLD3D11Query : public ID3D11Query1 {
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
+};
+
 template <typename Query>
 class MTLD3DQueryBase : public MTLD3D11DeviceChild<Query> {
 public:
@@ -97,10 +102,10 @@ protected:
 };
 
 template <typename DataType>
-class MTLD3D11DummyQuery : public MTLD3DQueryBase<ID3D11Query1> {
+class MTLD3D11DummyQuery : public MTLD3DQueryBase<MTLD3D11Query> {
 public:
   MTLD3D11DummyQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *desc)
-      : MTLD3DQueryBase<ID3D11Query1>(pDevice, desc) {}
+      : MTLD3DQueryBase<MTLD3D11Query>(pDevice, desc) {}
 
   virtual UINT STDMETHODCALLTYPE GetDataSize() override {
     return sizeof(DataType);
@@ -154,7 +159,7 @@ enum class EventState {
 
 constexpr size_t kEventStallThreshold = 64;
 
-struct MTLD3D11EventQuery : public ID3D11Query1 {
+struct MTLD3D11EventQuery : public MTLD3D11Query {
   virtual void Issue(uint64_t current_seq_id) = 0;
   virtual EventState CheckEventState(uint64_t coherent_seq_id) = 0;
 };
@@ -197,7 +202,7 @@ private:
   uint64_t should_be_signaled_at = 0;
 };
 
-class MTLD3D11OcclusionQuery : public ID3D11Query1 {
+class MTLD3D11OcclusionQuery : public MTLD3D11Query {
 public:
   virtual HRESULT GetData(void *data) = 0;
   virtual VisibilityResultQuery *Begin() = 0;
@@ -209,7 +214,7 @@ HRESULT CreateOcclusionQuery(MTLD3D11Device *pDevice,
                               const D3D11_QUERY_DESC1 *pDesc,
                               ID3D11Query1 **ppQuery);
 
-class MTLD3D11TimestampQuery : public ID3D11Query1 {
+class MTLD3D11TimestampQuery : public MTLD3D11Query {
 public:
   virtual HRESULT GetData(void *data) = 0;
   virtual TimestampQuery *End() = 0;
@@ -224,7 +229,7 @@ HRESULT CreateTimestampQuery(MTLD3D11Device *pDevice,
  * stream output writes, so they report no primitives and no overflow, which
  * is the right answer while no stream output targets are bound.
  */
-class MTLD3D11StreamOutputQuery : public ID3D11Query1 {
+class MTLD3D11StreamOutputQuery : public MTLD3D11Query {
 public:
   virtual void Begin() = 0;
   virtual void End() = 0;

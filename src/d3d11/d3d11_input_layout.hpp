@@ -23,6 +23,8 @@ DEFINE_COM_INTERFACE("b56c6a99-80cf-4c7f-a756-9e9ceb38730f",
                      IMTLD3D11InputLayout)
     : public ID3D11InputLayout {
   virtual ManagedInputLayout GetManagedInputLayout() = 0;
+  virtual void AddRefPrivate() = 0;
+  virtual void ReleasePrivate() = 0;
 };
 
 struct MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC {

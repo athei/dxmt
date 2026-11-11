@@ -677,15 +677,19 @@ public:
 
     if (!state_object_)
       state_object_ = new MTLD3D11DeviceContextState(device);
-    
+
     state_object_->state = std::move(state_);
+    if (com_cast<IMTLD3D11StreamOutputLayout>(state_object_->state.ShaderStages[PipelineStage::Geometry].Shader.ptr()))
+      state_object_->device_for_stream_output = device;
 
     if (ppPreviousState)
       *ppPreviousState = state_object_.ref();
 
     state_object_ = static_cast<MTLD3D11DeviceContextState *>(pState);
     state_ = std::move(state_object_->state);
-    
+    // Not the last device reference: the caller holds the context
+    state_object_->device_for_stream_output = nullptr;
+
     RestoreEncodingContextState();
   }
 

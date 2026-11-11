@@ -3,6 +3,7 @@
 
 #include "com/com_pointer.hpp"
 #include "d3d11_input_layout.hpp"
+#include "d3d11_query.hpp"
 #include "d3d11_shader.hpp"
 #include "d3d11_state_object.hpp"
 #include "d3d11_view.hpp"
@@ -76,7 +77,7 @@ struct D3D11ShaderStageState {
   SRVBindingSet SRVs;
   SamplerBindingSet Samplers;
   ConstantBufferBindingSet ConstantBuffers;
-  Com<IMTLD3D11Shader> Shader;
+  Com<IMTLD3D11Shader, false> Shader;
 };
 
 struct VERTEX_BUFFER_B {
@@ -94,7 +95,7 @@ template <> struct redundant_binding_trait<VERTEX_BUFFER_B> {
 };
 
 struct D3D11InputAssemblerStageState {
-  Com<IMTLD3D11InputLayout> InputLayout;
+  Com<IMTLD3D11InputLayout, false> InputLayout;
   BindingSet<VERTEX_BUFFER_B, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> VertexBuffers;
   Com<D3D11ResourceCommon, false> IndexBuffer;
   /**
@@ -178,7 +179,7 @@ struct D3D11ContextState {
   D3D11OutputMergerStageState OutputMerger = {};
   D3D11RasterizerStageState Rasterizer = {};
 
-  Com<ID3D11Predicate> predicate = nullptr;
+  Com<MTLD3D11Query, false> predicate = nullptr;
   BOOL predicate_value = FALSE;
 };
 
@@ -212,6 +213,10 @@ public:
     return E_NOINTERFACE;
   }
 
+  /* The device's pipeline cache owns stream output layouts, so a saved state
+     that binds one keeps the device alive until it is installed again or
+     destroyed. Declared before state, so it is released after it */
+  Com<ID3D11Device> device_for_stream_output;
   D3D11ContextState state = {};
 };
 

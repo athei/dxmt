@@ -170,10 +170,10 @@ private:
   Sha1Digest sha1_;
 
   class NullGeometryShader : public IMTLD3D11Shader {
-    IUnknown *container;
+    MTLD3D11StreamOutputLayout *container;
 
   public:
-    NullGeometryShader(IUnknown *container) : container(container) {};
+    NullGeometryShader(MTLD3D11StreamOutputLayout *container) : container(container) {};
 
     ULONG STDMETHODCALLTYPE AddRef() override { return container->AddRef(); }
     ULONG STDMETHODCALLTYPE Release() override { return container->Release(); }
@@ -182,6 +182,8 @@ private:
     }
 
     virtual ManagedShader GetManagedShader() override { return nullptr; };
+    void AddRefPrivate() override { container->AddRefPrivate(); }
+    void ReleasePrivate() override { container->ReleasePrivate(); }
   };
 
   NullGeometryShader null_gs;

@@ -2067,7 +2067,7 @@ public:
 
 
     if (ppPredicate) {
-      *ppPredicate = state_.predicate.ref();
+      *ppPredicate = reinterpret_cast<ID3D11Predicate *>(ref(state_.predicate.ptr()));
     }
     if (pPredicateValue) {
       *pPredicateValue = state_.predicate_value;
@@ -2081,7 +2081,11 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
 
-    state_.predicate = pPredicate;
+    // The binding may hold the only reference, so assigning the same query
+    // again would release it before referencing it
+    auto predicate = static_cast<MTLD3D11Query *>(static_cast<ID3D11Query *>(pPredicate));
+    if (state_.predicate.ptr() != predicate)
+      state_.predicate = predicate;
     state_.predicate_value = PredicateValue;
 
     if (pPredicate)
@@ -2109,7 +2113,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
-      state_.InputAssembler.InputLayout = std::move(expected);
+      state_.InputAssembler.InputLayout = expected.ptr();
     } else {
       state_.InputAssembler.InputLayout = nullptr;
     }
@@ -3585,7 +3589,7 @@ public:
         if (ShaderStage.Shader.ptr() == expected.ptr()) {
           return;
         }
-        ShaderStage.Shader = std::move(expected);
+        ShaderStage.Shader = expected.ptr();
         ShaderStage.ConstantBuffers.set_dirty();
         ShaderStage.SRVs.set_dirty();
         ShaderStage.Samplers.set_dirty();
