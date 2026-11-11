@@ -326,10 +326,13 @@ HRESULT ExtractMTLStreamOutputElements(
       return E_INVALIDARG;
     }
     auto reg_id = pDesc->Register;
+    // StartComponent counts from the first component of the output, which
+    // shares its register with others when the signature packs them
+    uint32_t first_component = (pDesc->Mask & 0xf) ? __builtin_ctz(pDesc->Mask & 0xf) : 0;
     for (unsigned i = 0; i < entry.ComponentCount; i++) {
       auto offset = offsets[entry.OutputSlot];
       offsets[entry.OutputSlot] += sizeof(float);
-      auto component = entry.StartComponent + i;
+      auto component = first_component + entry.StartComponent + i;
       pStreamOut[element_count++] = {.Register = reg_id,
                                      .Component = component,
                                      .OutputSlot = entry.OutputSlot,
