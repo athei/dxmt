@@ -154,6 +154,7 @@ public:
     pipeline_cache_ = InitializePipelineCache(this);
     context_ = InitializeImmediateContext(this, device_.queue());
     d3d10_ = std::make_unique<MTLD3D10Device>(this, context_.get());
+    d3d10_exposed_ = GetDirectXVersion() == 10;
     is_traced_ = !!::GetModuleHandle("dxgitrace.dll");
     format_inspector_.Inspect(GetMTLDevice());
   }
@@ -972,6 +973,7 @@ public:
       return S_FALSE;
     }
     *ppContextState = ref(new MTLD3D11DeviceContextState(this));
+    d3d10_exposed_ = true;
     return S_OK;
   }
 
@@ -1351,6 +1353,9 @@ private:
   /** ensure destructor called first */
   std::unique_ptr<MTLD3D11DeviceContextBase> context_;
   std::unique_ptr<MTLD3D10Device> d3d10_;
+  /* A device answers for ID3D10Device only when D3D10CoreCreateDevice
+     created it, or once it has created a context state */
+  std::atomic<bool> d3d10_exposed_;
   D3D11Multithread d3dmt_;
 };
 
@@ -1415,6 +1420,8 @@ public:
     }
 
     if (riid == __uuidof(ID3D10Device) || riid == __uuidof(ID3D10Device1)) {
+      if (!d3d11_device_.d3d10_exposed_)
+        return E_NOINTERFACE;
       *ppvObject = ref_and_cast<ID3D10Device>(d3d11_device_.d3d10_.get());
       return S_OK;
     }
