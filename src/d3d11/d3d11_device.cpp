@@ -947,8 +947,26 @@ public:
       D3D_FEATURE_LEVEL *pChosenFeatureLevel,
       ID3DDeviceContextState **ppContextState) override {
     InitReturnPtr(ppContextState);
+    if (pChosenFeatureLevel)
+      *pChosenFeatureLevel = D3D_FEATURE_LEVEL();
 
-    // TODO: validation
+    if (!pFeatureLevels || !FeatureLevels)
+      return E_INVALIDARG;
+
+    // Windows chooses the first requested level the adapter supports
+    D3D_FEATURE_LEVEL max_level = GetMaxFeatureLevel(GetMTLDevice());
+    D3D_FEATURE_LEVEL chosen_level = D3D_FEATURE_LEVEL();
+    for (UINT i = 0; i < FeatureLevels; i++) {
+      if (pFeatureLevels[i] && pFeatureLevels[i] <= max_level) {
+        chosen_level = pFeatureLevels[i];
+        break;
+      }
+    }
+    if (!chosen_level)
+      return E_FAIL;
+
+    if (pChosenFeatureLevel)
+      *pChosenFeatureLevel = chosen_level;
 
     if (ppContextState == nullptr) {
       return S_FALSE;
