@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
+#include <algorithm>
 
 namespace dxmt::dxbc {
 
@@ -385,20 +386,44 @@ IOHelper::PopulateOutputStreamOutput(
   );
   auto slot0_entry = ir.CreateLoad(so_entries_type, ir.CreateConstInBoundsGEP1_32(so_entries_type, so_entries, 0));
   auto slot0 = ir.CreateExtractValue(slot0_entry, {0});
+  auto slot0_size = ir.CreateExtractValue(slot0_entry, {2});
   auto adjusted_vertex_id = ir.CreateSub(vertex_id, base_vertex);
   auto output_regs = ir.CreateBitOrPointerCast(io.output.ptr_int4, llvm::PointerType::get(types._int, 0));
+
+  uint32_t stride = vertex_so->strides[0];
+  uint32_t vertex_size = stride;
+  for (unsigned i = 0; i < vertex_so->num_elements; i++) {
+    auto &element = vertex_so->elements[i];
+    if (element.reg_id != 0xffffffff)
+      vertex_size = std::max(vertex_size, element.offset + 4);
+  }
+  if (!vertex_size)
+    return StructRet;
+
+  // A vertex is written only when all of it fits into the bound buffer, which
+  // has a size of 0 without one
+  auto vertex_offset = ir.CreateMul(ir.CreateZExt(adjusted_vertex_id, types._long), ir.getInt64(stride));
+  auto fits = ir.CreateICmpULE(
+      ir.CreateAdd(vertex_offset, ir.getInt64(vertex_size)), ir.CreateZExt(slot0_size, types._long)
+  );
+  auto current = ir.GetInsertBlock();
+  auto write_vertex = llvm::BasicBlock::Create(ir.getContext(), "stream_output_write", current->getParent());
+  auto continuation = llvm::BasicBlock::Create(ir.getContext(), "stream_output_done", current->getParent());
+  ir.CreateCondBr(fits, write_vertex, continuation);
+  ir.SetInsertPoint(write_vertex);
+
+  auto vertex_ptr = ir.CreateGEP(types._int, slot0, {ir.CreateLShr(vertex_offset, 2)});
   for (unsigned i = 0; i < vertex_so->num_elements; i++) {
     auto &element = vertex_so->elements[i];
     if (element.reg_id == 0xffffffff)
       continue;
     auto ptr = ir.CreateConstGEP1_32(types._int, output_regs, (unsigned)(element.reg_id * 4 + element.component));
-    auto target_offset = ir.CreateAdd(
-        ir.CreateMul(adjusted_vertex_id, air.getInt(vertex_so->strides[element.output_slot /* expected to be 0 */])),
-        air.getInt(element.offset)
-    );
-    auto target_ptr = ir.CreateGEP(types._int, slot0, {ir.CreateLShr(target_offset, 2)});
+    auto target_ptr = ir.CreateConstGEP1_32(types._int, vertex_ptr, element.offset / 4);
     ir.CreateStore(ir.CreateLoad(types._int, ptr), target_ptr, true);
   }
+
+  ir.CreateBr(continuation);
+  ir.SetInsertPoint(continuation);
   return StructRet;
 }
 

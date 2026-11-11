@@ -106,6 +106,17 @@ struct StreamOutputBinding {
   Rc<Buffer> counter;
 };
 
+/* An entry of the stream output table the emulated stream output reads;
+   airconv's dxmt_stream_output_buffer_entry has the same layout */
+struct SO_BUFFER_ENTRY {
+  uint64_t buffer_handle;
+  uint64_t counter_handle;
+  /* bytes from buffer_handle to the end of the buffer: the shader writes no
+     vertex that does not fit */
+  uint32_t size;
+  uint32_t reserved;
+};
+
 enum class EncoderType {
   Null,
   Render,

@@ -4642,10 +4642,9 @@ public:
     state_.ShaderStages[PipelineStage::Geometry].Samplers.set_dirty();
     state_.ShaderStages[PipelineStage::Geometry].SRVs.set_dirty();
     state_.InputAssembler.VertexBuffers.set_dirty();
-    {
-      if (state_.StreamOutput.Targets.any_bound())
-        state_.StreamOutput.Targets.set_dirty();
-    }
+    // Emulated stream output reads its table on every encoder, also with no
+    // target bound
+    state_.StreamOutput.Targets.set_dirty();
     state_.OutputMerger.UAVs.set_dirty();
     dirty_state.set(
         DirtyState::BlendFactorAndStencilRef, DirtyState::RasterizerState, DirtyState::DepthStencilState,
@@ -5056,6 +5055,9 @@ public:
       state_.ShaderStages[PipelineStage::Vertex].ConstantBuffers.set_dirty();
       state_.ShaderStages[PipelineStage::Vertex].SRVs.set_dirty();
       state_.ShaderStages[PipelineStage::Vertex].Samplers.set_dirty();
+      // The other pipelines do not encode the table the emulated stream
+      // output reads
+      state_.StreamOutput.Targets.set_dirty();
       previous_render_pipeline_state = CommandBufferState::RenderPipelineReady;
     }
 
@@ -5228,8 +5230,11 @@ public:
       return;
     if (!state_.StreamOutput.Targets.any_dirty())
       return;
+    // Only the ordinary pipeline reads the table without a target
+    if (cmdbuf_state != CommandBufferState::RenderPipelineReady && !state_.StreamOutput.Targets.any_bound())
+      return;
 
-    auto offset = PreAllocateArgumentBuffer(16 /* size of two pointer */ * kStreamOutputSlots, 32);
+    auto offset = PreAllocateArgumentBuffer(sizeof(SO_BUFFER_ENTRY) * kStreamOutputSlots, 32);
 
     if (cmdbuf_state == CommandBufferState::RenderPipelineReady)
       EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Ordinary>(offset); });

@@ -121,10 +121,6 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
       cmd.type = WMTRenderCommandSetVertexBufferOffset;
   }
 }
-struct SO_BUFFER_ENTRY {
-  uint64_t buffer_handle;
-  uint64_t counter_handle;
-};
 
 template <>
 void
@@ -135,14 +131,19 @@ ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Ordinary>(uint6
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
     auto &state = so_[slot];
     auto &buffer = state.buffer;
-    if (!buffer.ptr()) {
-      entries[slot].buffer_handle = 0;
-      entries[slot].counter_handle = 0;
+    entries[slot] = {};
+    if (!buffer.ptr())
       continue;
-    }
+    // The offset 0xffffffff appends at the filled size, which is not tracked
+    // yet, so nothing is written as if the buffer were full
+    if (state.offset == 0xffffffff)
+      setCompatibilityFlag(FeatureCompatibility::UnsupportedStreamOutputAppending);
+    if (state.offset >= buffer->length())
+      continue;
     auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, state.offset, 0, ResourceAccess::Write);
     entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset + state.offset;
     entries[slot].counter_handle = 0; // TODO(stream-output): counter & buffer_filled_size
+    entries[slot].size = buffer->length() - state.offset;
     makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
   };
   {
