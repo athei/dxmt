@@ -548,6 +548,23 @@ typedef struct _D3DKMT_SETVIDPNSOURCEOWNER {
   UINT VidPnSourceCount;
 } D3DKMT_SETVIDPNSOURCEOWNER;
 
+typedef struct _D3DKMT_CREATEDCFROMMEMORY {
+  void *pMemory;
+  UINT Format; /* D3DDDIFORMAT */
+  UINT Width;
+  UINT Height;
+  UINT Pitch;
+  HDC hDeviceDc;
+  PALETTEENTRY *pColorTable;
+  HDC hDc;
+  HANDLE hBitmap;
+} D3DKMT_CREATEDCFROMMEMORY;
+
+typedef struct _D3DKMT_DESTROYDCFROMMEMORY {
+  HDC hDc;
+  HANDLE hBitmap;
+} D3DKMT_DESTROYDCFROMMEMORY;
+
 #ifdef _WIN32
 
 extern "C"
@@ -576,6 +593,8 @@ extern "C"
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTAcquireKeyedMutex(D3DKMT_ACQUIREKEYEDMUTEX *desc);
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTReleaseKeyedMutex(D3DKMT_RELEASEKEYEDMUTEX *desc);
   DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTSetVidPnSourceOwner(const D3DKMT_SETVIDPNSOURCEOWNER *desc);
+  DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTCreateDCFromMemory(D3DKMT_CREATEDCFROMMEMORY *desc);
+  DECLSPEC_IMPORT NTSTATUS WINAPI D3DKMTDestroyDCFromMemory(const D3DKMT_DESTROYDCFROMMEMORY *desc);
 }
 
 #else
@@ -701,6 +720,16 @@ extern "C"
 
   inline NTSTATUS WINAPI D3DKMTSetVidPnSourceOwner(const D3DKMT_SETVIDPNSOURCEOWNER *desc) {
     dxmt::Logger::warn("D3DKMTSetVidPnSourceOwner not implemented.");
+    return -1;
+  }
+
+  inline NTSTATUS WINAPI D3DKMTCreateDCFromMemory(D3DKMT_CREATEDCFROMMEMORY *desc) {
+    dxmt::Logger::warn("D3DKMTCreateDCFromMemory not implemented.");
+    return -1;
+  }
+
+  inline NTSTATUS WINAPI D3DKMTDestroyDCFromMemory(const D3DKMT_DESTROYDCFROMMEMORY *desc) {
+    dxmt::Logger::warn("D3DKMTDestroyDCFromMemory not implemented.");
     return -1;
   }
 }

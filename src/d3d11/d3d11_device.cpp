@@ -1057,6 +1057,21 @@ public:
     if (!ValidateTextureUsage(pDesc, pInitialData))
       return E_INVALIDARG;
 
+    // A DC draws only on single-sampled default textures with a B8G8R8A8
+    // format
+    if (pDesc->MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) {
+      if (pDesc->Usage != D3D11_USAGE_DEFAULT || pDesc->SampleDesc.Count > 1)
+        return E_INVALIDARG;
+      switch (pDesc->Format) {
+      case DXGI_FORMAT_B8G8R8A8_UNORM:
+      case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+      case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        break;
+      default:
+        return E_INVALIDARG;
+      }
+    }
+
     try {
       switch (pDesc->Usage) {
       case D3D11_USAGE_DEFAULT:

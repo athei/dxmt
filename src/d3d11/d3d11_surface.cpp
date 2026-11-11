@@ -31,6 +31,15 @@ D3D11DXGISurface::D3D11DXGISurface(ID3D11Resource *pParentResource, UINT Subreso
     subresource_(Subresource),
     surface_from_subresource_(true) {}
 
+D3D11DXGISurface::~D3D11DXGISurface() {
+  if (dc_) {
+    D3DKMT_DESTROYDCFROMMEMORY destroy = {};
+    destroy.hDc = dc_;
+    destroy.hBitmap = dc_bitmap_;
+    D3DKMTDestroyDCFromMemory(&destroy);
+  }
+}
+
 ULONG STDMETHODCALLTYPE
 D3D11DXGISurface::AddRef() {
   return resource_->AddRef();
@@ -195,16 +204,138 @@ D3D11DXGISurface::Unmap() {
   return S_OK;
 }
 
+/* D3DDDIFMT_A8R8G8B8, the layout of the B8G8R8A8 formats */
+constexpr UINT kDCFormat = 21;
+
+/* Only single-sampled 2D textures created with
+   D3D11_RESOURCE_MISC_GDI_COMPATIBLE and one of the B8G8R8A8 formats have a
+   DC; a swap chain's back buffers get the flag without CreateTexture2D's
+   checks */
+HRESULT
+D3D11DXGISurface::GetDCDesc(D3D11_TEXTURE2D_DESC *pDesc, UINT *pWidth, UINT *pHeight) {
+  D3D11_RESOURCE_DIMENSION dimension;
+  resource_->GetType(&dimension);
+  if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+    return DXGI_ERROR_INVALID_CALL;
+
+  GetResourceCommon(resource_)->GetDesc(pDesc);
+  if (!(pDesc->MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) || pDesc->SampleDesc.Count > 1)
+    return DXGI_ERROR_INVALID_CALL;
+  switch (pDesc->Format) {
+  case DXGI_FORMAT_B8G8R8A8_UNORM:
+  case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+  case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    break;
+  default:
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  UINT level = subresource_ % pDesc->MipLevels;
+  *pWidth = std::max(1u, pDesc->Width >> level);
+  *pHeight = std::max(1u, pDesc->Height >> level);
+  return S_OK;
+}
+
 HRESULT STDMETHODCALLTYPE
 D3D11DXGISurface::GetDC(BOOL Discard, HDC *phdc) {
-  // TODO(gdi-surface)
-  return DXGI_ERROR_INVALID_CALL;
+  // A failed call leaves *phdc as it is, as on Windows
+  if (!phdc)
+    return E_INVALIDARG;
+
+  D3D11_TEXTURE2D_DESC desc;
+  UINT width, height;
+  if (FAILED(GetDCDesc(&desc, &width, &height)) || dc_acquired_)
+    return DXGI_ERROR_INVALID_CALL;
+
+  if (!dc_) {
+    dc_bits_.resize(width * height);
+
+    D3DKMT_CREATEDCFROMMEMORY create = {};
+    create.pMemory = dc_bits_.data();
+    create.Format = kDCFormat;
+    create.Width = width;
+    create.Height = height;
+    create.Pitch = width * sizeof(uint32_t);
+    create.hDeviceDc = CreateCompatibleDC(nullptr);
+    NTSTATUS status = D3DKMTCreateDCFromMemory(&create);
+    DeleteDC(create.hDeviceDc);
+    if (status) {
+      ERR("DXGISurface::GetDC: Failed to create DC, status ", status);
+      return E_FAIL;
+    }
+    dc_ = create.hDc;
+    dc_bitmap_ = create.hBitmap;
+  }
+
+  if (!Discard) {
+    Com<ID3D11Device> device;
+    Com<ID3D11DeviceContext> context;
+    resource_->GetDevice(&device);
+    device->GetImmediateContext(&context);
+
+    if (!dc_readback_) {
+      D3D11_TEXTURE2D_DESC readback_desc = {};
+      readback_desc.Width = width;
+      readback_desc.Height = height;
+      readback_desc.MipLevels = 1;
+      readback_desc.ArraySize = 1;
+      readback_desc.Format = desc.Format;
+      readback_desc.SampleDesc = {1, 0};
+      readback_desc.Usage = D3D11_USAGE_STAGING;
+      readback_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      if (FAILED(device->CreateTexture2D(&readback_desc, nullptr, &dc_readback_))) {
+        ERR("DXGISurface::GetDC: Failed to create readback texture");
+        return E_FAIL;
+      }
+    }
+
+    context->CopySubresourceRegion(dc_readback_.ptr(), 0, 0, 0, 0, resource_, subresource_, nullptr);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (FAILED(context->Map(dc_readback_.ptr(), 0, D3D11_MAP_READ, 0, &mapped)))
+      return E_FAIL;
+    for (UINT row = 0; row < height; row++) {
+      memcpy(
+          dc_bits_.data() + row * width, static_cast<const char *>(mapped.pData) + row * mapped.RowPitch,
+          width * sizeof(uint32_t)
+      );
+    }
+    context->Unmap(dc_readback_.ptr(), 0);
+  }
+
+  dc_acquired_ = true;
+  *phdc = dc_;
+  return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE
 D3D11DXGISurface::ReleaseDC(RECT *pDirtyRect) {
-  // TODO(gdi-surface)
-  return DXGI_ERROR_INVALID_CALL;
+  D3D11_TEXTURE2D_DESC desc;
+  UINT width, height;
+  if (!dc_acquired_ || FAILED(GetDCDesc(&desc, &width, &height)))
+    return DXGI_ERROR_INVALID_CALL;
+  dc_acquired_ = false;
+
+  RECT rect = {0, 0, LONG(width), LONG(height)};
+  if (pDirtyRect) {
+    rect.left = std::max<LONG>(pDirtyRect->left, 0);
+    rect.top = std::max<LONG>(pDirtyRect->top, 0);
+    rect.right = std::min<LONG>(pDirtyRect->right, width);
+    rect.bottom = std::min<LONG>(pDirtyRect->bottom, height);
+  }
+  if (rect.left >= rect.right || rect.top >= rect.bottom)
+    return S_OK;
+
+  Com<ID3D11Device> device;
+  Com<ID3D11DeviceContext> context;
+  resource_->GetDevice(&device);
+  device->GetImmediateContext(&context);
+
+  D3D11_BOX box = {UINT(rect.left), UINT(rect.top), 0, UINT(rect.right), UINT(rect.bottom), 1};
+  context->UpdateSubresource(
+      resource_, subresource_, &box, dc_bits_.data() + rect.top * width + rect.left, width * sizeof(uint32_t),
+      width * height * sizeof(uint32_t)
+  );
+  return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE
