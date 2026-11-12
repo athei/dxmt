@@ -2081,11 +2081,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
 
-    // The binding may hold the only reference, so assigning the same query
-    // again would release it before referencing it
-    auto predicate = static_cast<MTLD3D11Query *>(static_cast<ID3D11Query *>(pPredicate));
-    if (state_.predicate.ptr() != predicate)
-      state_.predicate = predicate;
+    state_.predicate = static_cast<MTLD3D11Query *>(static_cast<ID3D11Query *>(pPredicate));
     state_.predicate_value = PredicateValue;
 
     if (pPredicate)
