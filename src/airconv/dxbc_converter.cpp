@@ -628,8 +628,13 @@ llvm::Error convert_dxbc_vertex_shader(
       .arg_name = "stream_outputs",
       .raster_order_group = {}
     });
+    std::vector<uint8_t> output_masks(max_output_register);
+    for (auto &out : pShaderInternal->output_signature) {
+      if (out.reg() < max_output_register)
+        output_masks[out.reg()] |= out.mask() & 0xf;
+    }
     epilogue.Add([=](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
-      return io.PopulateOutputStreamOutput(value, vertex_so, bv, vid, so_table);
+      return io.PopulateOutputStreamOutput(value, vertex_so, output_masks, bv, vid, so_table);
     });
   }
 

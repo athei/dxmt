@@ -375,7 +375,8 @@ IOHelper::PopulateDefaultCoverageMask(llvm::Value *StructRet, uint32_t to_elemen
 llvm::Value *
 IOHelper::PopulateOutputStreamOutput(
     llvm::Value *StructRet, const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *vertex_so,
-    uint32_t base_vertex_arg_index, uint32_t vertex_id_arg_index, uint32_t stream_output_table_arg_index
+    const std::vector<uint8_t> &output_masks, uint32_t base_vertex_arg_index, uint32_t vertex_id_arg_index,
+    uint32_t stream_output_table_arg_index
 ) {
   auto base_vertex = function->getArg(base_vertex_arg_index);
   auto vertex_id = function->getArg(vertex_id_arg_index);
@@ -417,9 +418,16 @@ IOHelper::PopulateOutputStreamOutput(
     auto &element = vertex_so->elements[i];
     if (element.reg_id == 0xffffffff)
       continue;
-    auto ptr = ir.CreateConstGEP1_32(types._int, output_regs, (unsigned)(element.reg_id * 4 + element.component));
+    // The declaration's signature can come from other bytecode than the
+    // vertex shader; a component the vertex shader does not write is 0
+    llvm::Value *value = ir.getInt32(0);
+    if (element.reg_id < output_masks.size() && element.component < 4 &&
+        (output_masks[element.reg_id] & (1u << element.component))) {
+      auto ptr = ir.CreateConstGEP1_32(types._int, output_regs, (unsigned)(element.reg_id * 4 + element.component));
+      value = ir.CreateLoad(types._int, ptr);
+    }
     auto target_ptr = ir.CreateConstGEP1_32(types._int, vertex_ptr, element.offset / 4);
-    ir.CreateStore(ir.CreateLoad(types._int, ptr), target_ptr, true);
+    ir.CreateStore(value, target_ptr, true);
   }
 
   ir.CreateBr(continuation);

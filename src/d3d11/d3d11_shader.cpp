@@ -315,10 +315,11 @@ std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantVertexStreamOutput variant) {
   // Salt of the variants that check each vertex against the size of its
-  // target, so that the shader cache serves none compiled without the check
-  static constexpr char kStreamOutputSizeCheck[] = "stream output size check";
+  // target and stream out 0 for outputs the vertex shader does not write, so
+  // that the shader cache serves none compiled without these checks
+  static constexpr char kStreamOutputChecks[] = "stream output size check, unwritten outputs";
   Sha1HashState h;
-  h.update(kStreamOutputSizeCheck);
+  h.update(kStreamOutputChecks);
   h.update(getGlobalShaderFlag());
   h.update(((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)->Digest());
   if (variant.input_layout_handle)

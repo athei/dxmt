@@ -66,9 +66,12 @@ public:
   llvm::Value *
   PopulateDefaultCoverageMask(llvm::Value *StructRet, uint32_t AtElement, uint32_t SampleMask);
 
+  /* OutputMasks has the components the vertex shader writes of each of its
+     output registers */
   llvm::Value *PopulateOutputStreamOutput(
       llvm::Value *StructRet, const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *VertexSO,
-      uint32_t BaseVertexArgumentIndex, uint32_t VertexIDArgumentIndex, uint32_t StreamOutputTableArgumentIndex
+      const std::vector<uint8_t> &OutputMasks, uint32_t BaseVertexArgumentIndex, uint32_t VertexIDArgumentIndex,
+      uint32_t StreamOutputTableArgumentIndex
   );
 
   void PopulateMeshOutputRenderTargetArrayIndex(uint32_t FromRegister, uint32_t Mask, llvm::Value *PrimitiveId);
