@@ -52,6 +52,21 @@ WMTPixelFormat ConvertSwapChainFormat(DXGI_FORMAT format) {
   }
 }
 
+// A width or height of 0 takes the window's client area, and a window
+// without a client area gets 8x8 buffers, as on Windows. WidthFallback and
+// HeightFallback say whether that dimension is the 8, which neither the
+// application nor the window chose.
+static void
+ResolveBufferSize(HWND hWnd, UINT &Width, UINT &Height, bool &WidthFallback, bool &HeightFallback) {
+  wsi::getWindowSize(hWnd, Width ? nullptr : &Width, Height ? nullptr : &Height);
+  WidthFallback = !Width;
+  HeightFallback = !Height;
+  if (!Width)
+    Width = 8;
+  if (!Height)
+    Height = 8;
+}
+
 WMTColorSpace ConvertColorSpace(DXGI_COLOR_SPACE_TYPE color_space, bool hdr) {
   switch (color_space) {
   case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
@@ -220,9 +235,7 @@ public:
       frame_latency_fence_ = std::make_unique<CpuFence>();
     }
 
-    if (desc_.Width == 0 || desc_.Height == 0) {
-      wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
-    }
+    ResolveBufferSize(hWnd, desc_.Width, desc_.Height, width_fallback_, height_fallback_);
 
     if (pFullscreenDesc) {
       fullscreen_desc_ = *pFullscreenDesc;
@@ -264,7 +277,9 @@ public:
       backbuffer_desc_.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 
     // FIXME: check HRESULT!
-    ResizeBuffers(0, desc_.Width, desc_.Height, DXGI_FORMAT_UNKNOWN, desc_.Flags);
+    // The sizes passed in, so that ResizeBuffers decides again which of them
+    // are the 8x8 fallback
+    ResizeBuffers(0, pDesc->Width, pDesc->Height, DXGI_FORMAT_UNKNOWN, desc_.Flags);
     // Without the saved window state, releasing the swap chain could not
     // restore the window
     if (!fullscreen_desc_.Windowed && FAILED(EnterFullscreenMode(nullptr))) {
@@ -507,9 +522,14 @@ public:
       refresh_rate = fullscreen_desc_.RefreshRate;
     }
 
+    // A size with a dimension of the 8x8 fallback is left unspecified, so
+    // that the mode switch keeps the current mode instead of going to the
+    // mode closest to it; FindClosestMatchingMode1 takes both dimensions 0
+    // or neither
+    bool fallback = width_fallback_ || height_fallback_;
     DXGI_MODE_DESC1 preferred_display_mode = {
-        desc_.Width,
-        desc_.Height,
+        fallback ? 0u : desc_.Width,
+        fallback ? 0u : desc_.Height,
         refresh_rate,
         desc_.Format,
         DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
@@ -704,25 +724,17 @@ public:
       desc_.BufferCount = BufferCount;
     extra_backbuffers_.clear();
     rotation_buffer_ = nullptr;
-    if (Width == 0 || Height == 0) {
-      wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
-    } else {
-      desc_.Width = Width;
-      desc_.Height = Height;
-    }
+    ResolveBufferSize(hWnd, Width, Height, width_fallback_, height_fallback_);
+    desc_.Width = Width;
+    desc_.Height = Height;
     if (Format != DXGI_FORMAT_UNKNOWN) {
       if (ConvertSwapChainFormat(Format) != WMTPixelFormatInvalid)
         desc_.Format = Format;
     }
 
     backbuffer_ = nullptr;
-    if (desc_.Width == 0 || desc_.Height == 0) {
-      backbuffer_desc_.Width = 1;
-      backbuffer_desc_.Height = 1;
-    } else {
-      backbuffer_desc_.Width = desc_.Width;
-      backbuffer_desc_.Height = desc_.Height;
-    }
+    backbuffer_desc_.Width = desc_.Width;
+    backbuffer_desc_.Height = desc_.Height;
 
     ApplyLayerProps();
 
@@ -1336,6 +1348,9 @@ private:
   WMT::MetalLayer layer_weak_;
   ULONG presentation_count_;
   DXGI_SWAP_CHAIN_DESC1 desc_;
+  // Whether desc_.Width and desc_.Height are ResolveBufferSize's 8x8 fallback
+  bool width_fallback_ = false;
+  bool height_fallback_ = false;
   DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc_;
   D3D11_TEXTURE2D_DESC1 backbuffer_desc_;
   IMTLD3D11DeviceContext* device_context_;
