@@ -98,8 +98,10 @@ public:
     uint32_t refCount = --this->refcount;
     D3D11_ASSERT(refCount != ~0u && "try to release a 0 reference object");
     if (unlikely(!refCount)) {
-      this->m_parent->Release();
+      // The destructor still uses the device, which this may keep alive
+      auto parent = this->m_parent;
       delete this;
+      parent->Release();
     }
 
     return refCount;
