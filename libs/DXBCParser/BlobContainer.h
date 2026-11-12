@@ -77,7 +77,7 @@ class CDXBCParser;
 // Parse a DXBC (DX Blob Container) that you provide as input.
 //
 // Basic usage:
-// (1) Call ReadDXBC() or ReadDXBCAssumingValidSize() (latter if you don't know the size, but trust the pointer)
+// (1) Call ReadDXBC() or ReadDXBCWithinLength() (latter if you only know how many bytes are readable)
 // (2) Call various Get*() commands to retrieve information about the container such as 
 //     how many blobs are in it, the hash of the container, the version #, and most importantly
 //     retrieve all of the Blobs.  You can retrieve blobs by searching for the FourCC, or
@@ -104,15 +104,14 @@ public:
     // 
     // Returns S_OK, or E_FAIL
     //
-    // Note, if you don't know ContainerSize and are willing to 
-    // assume your pointer pContainer is valid, you can call
-    // ReadDXBCAssumingValidSize
+    // Note, if you don't know ContainerSize but know how many bytes
+    // are readable at pContainer, you can call ReadDXBCWithinLength
     HRESULT ReadDXBC(const void* pContainer, UINT32 ContainerSizeInBytes); 
                                     
 
-    // Same as ReadDXBC(), except this assumes the size field stored inside 
-    // pContainer is valid.
-    HRESULT ReadDXBCAssumingValidSize(const void* pContainer);                              
+    // Same as ReadDXBC() with the size field stored inside pContainer, which
+    // has to be within the Length bytes readable at pContainer.
+    HRESULT ReadDXBCWithinLength(const void* pContainer, size_t Length);
 
     // returns NULL if no valid container is set
     const DXBCVersion* GetVersion(); 

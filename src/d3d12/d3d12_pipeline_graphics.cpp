@@ -156,7 +156,7 @@ constexpr WMTColorWriteMask kColorWriteMaskMap[] = {
 
 HRESULT
 ExtractMTLInputLayoutElements(
-    MTLD3D12Device *device, const void *pShaderBytecodeWithInputSignature,
+    MTLD3D12Device *device, const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
     const D3D12_INPUT_ELEMENT_DESC *pInputElementDescs, uint32_t NumElements, SM50_IA_INPUT_ELEMENT *pInputLayout,
     uint32_t *pNumElementsOut
 ) {
@@ -166,7 +166,7 @@ ExtractMTLInputLayoutElements(
   uint32_t register_mask = 0;
 
   CSignatureParser parser;
-  HRESULT hr = DXBCGetInputSignature(pShaderBytecodeWithInputSignature, &parser);
+  HRESULT hr = DXBCGetInputSignature(pShaderBytecodeWithInputSignature, BytecodeLength, &parser);
   if (FAILED(hr)) {
     return hr;
   }
@@ -504,7 +504,7 @@ public:
       std::vector<SM50_IA_INPUT_ELEMENT> elements(pDesc->InputLayout.NumElements);
       if (FAILED(
               hr = ExtractMTLInputLayoutElements(
-                  device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs,
+                  device_, pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, pDesc->InputLayout.pInputElementDescs,
                   pDesc->InputLayout.NumElements, elements.data(), &data_ia_layout.num_elements
               )
           ))
@@ -746,7 +746,7 @@ public:
         std::vector<SM50_IA_INPUT_ELEMENT> elements(pDesc->InputLayout.NumElements);
         if (FAILED(
                 hr = ExtractMTLInputLayoutElements(
-                    device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs,
+                    device_, pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, pDesc->InputLayout.pInputElementDescs,
                     pDesc->InputLayout.NumElements, elements.data(), &data_ia_layout.num_elements
                 )
             ))
@@ -976,7 +976,7 @@ public:
         std::vector<SM50_IA_INPUT_ELEMENT> elements(pDesc->InputLayout.NumElements);
         if (FAILED(
                 hr = ExtractMTLInputLayoutElements(
-                    device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs,
+                    device_, pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, pDesc->InputLayout.pInputElementDescs,
                     pDesc->InputLayout.NumElements, elements.data(), &data_ia_layout.num_elements
                 )
             ))

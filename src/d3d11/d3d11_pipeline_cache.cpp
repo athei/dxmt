@@ -320,6 +320,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   }
 
   HRESULT AddInputLayout(const void *pShaderBytecodeWithInputSignature,
+                         SIZE_T BytecodeLength,
                          const D3D11_INPUT_ELEMENT_DESC *pInputElementDesc,
                          UINT NumElements,
                          IMTLD3D11InputLayout **ppInputLayout) override {
@@ -328,7 +329,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     uint32_t num_metal_ia_elements;
     HRESULT hr;
     if (FAILED(hr = ExtractMTLInputLayoutElements(
-            device, pShaderBytecodeWithInputSignature, pInputElementDesc,
+            device, pShaderBytecodeWithInputSignature, BytecodeLength, pInputElementDesc,
             NumElements, buffer.data(), &num_metal_ia_elements))) {
       return hr;
     }
@@ -347,7 +348,8 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   }
 
   HRESULT
-  AddStreamOutputLayout(const void *pShaderBytecode, UINT NumEntries,
+  AddStreamOutputLayout(const void *pShaderBytecode, SIZE_T BytecodeLength,
+                        UINT NumEntries,
                         const D3D11_SO_DECLARATION_ENTRY *pEntries,
                         UINT NumStrides, const UINT *pStrides,
                         UINT RasterizedStream,
@@ -357,7 +359,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     std::array<uint32_t, 4> strides = {{}};
     uint32_t num_metal_so_elements;
     if (FAILED(ExtractMTLStreamOutputElements(
-            device, pShaderBytecode, NumEntries, pEntries, buffer.data(),
+            device, pShaderBytecode, BytecodeLength, NumEntries, pEntries, buffer.data(),
             &num_metal_so_elements))) {
       return E_FAIL;
     }

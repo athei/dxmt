@@ -12,7 +12,7 @@
 namespace dxmt {
 
 HRESULT ExtractMTLInputLayoutElements(
-    MTLD3D11Device *device, const void *pShaderBytecodeWithInputSignature,
+    MTLD3D11Device *device, const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
     const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs, uint32_t NumElements,
     MTL_SHADER_INPUT_LAYOUT_ELEMENT_DESC *pInputLayout,
     uint32_t *pNumElementsOut) {
@@ -23,7 +23,7 @@ HRESULT ExtractMTLInputLayoutElements(
 
   CSignatureParser parser;
   HRESULT hr =
-      DXBCGetInputSignature(pShaderBytecodeWithInputSignature, &parser);
+      DXBCGetInputSignature(pShaderBytecodeWithInputSignature, BytecodeLength, &parser);
   if (FAILED(hr)) {
     return hr;
   }
@@ -194,7 +194,7 @@ private:
    as Wine's d3d11 and d3d10core tests record it */
 HRESULT
 ValidateStreamOutputDeclaration(
-    const void *pShaderBytecode, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumEntries,
+    const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumEntries,
     const UINT *pStrides, UINT NumStrides, UINT RasterizedStream, D3D_FEATURE_LEVEL FeatureLevel
 ) {
   using namespace microsoft;
@@ -212,7 +212,7 @@ ValidateStreamOutputDeclaration(
     return S_OK;
 
   CSignatureParser5 parser;
-  if (FAILED(DXBCGetOutputSignature(pShaderBytecode, &parser)))
+  if (FAILED(DXBCGetOutputSignature(pShaderBytecode, BytecodeLength, &parser)))
     return E_INVALIDARG;
 
   for (unsigned i = 0; i < NumEntries; i++) {
@@ -286,7 +286,7 @@ ValidateStreamOutputDeclaration(
 }
 
 HRESULT ExtractMTLStreamOutputElements(
-    MTLD3D11Device *pDevice, const void *pShaderBytecode, UINT NumEntries,
+    MTLD3D11Device *pDevice, const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries,
     const D3D11_SO_DECLARATION_ENTRY *pEntries,
     MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *pStreamOut,
     uint32_t *pNumElementsOut) {
@@ -294,7 +294,7 @@ HRESULT ExtractMTLStreamOutputElements(
   std::array<uint32_t, 4> offsets = {{}};
   uint32_t element_count = 0;
   CSignatureParser parser;
-  HRESULT hr = DXBCGetOutputSignature(pShaderBytecode, &parser);
+  HRESULT hr = DXBCGetOutputSignature(pShaderBytecode, BytecodeLength, &parser);
   if (FAILED(hr)) {
     return hr;
   }

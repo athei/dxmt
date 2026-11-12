@@ -351,7 +351,7 @@ setup_binding_rootsig(
 
   const void *pRawRootSig;
   UINT RawRootSigSize;
-  HRESULT hr = microsoft::DXBCGetRootSignature(bytecode, &pRawRootSig, &RawRootSigSize);
+  HRESULT hr = microsoft::DXBCGetRootSignature(bytecode, bytecode_length, &pRawRootSig, &RawRootSigSize);
   if (FAILED(hr)) {
     assert(0 && "invalid root signature blob");
     return {};

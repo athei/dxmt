@@ -973,12 +973,12 @@ AIRCONV_API int SM50Initialize(
   // 1. Collect information about the shader.
   D3D10ShaderBinary::CShaderCodeParser CodeParser(ShaderCode);
   CSignatureParser inputParser;
-  if (DXBCGetInputSignature(pBytecode, &inputParser) != S_OK) {
+  if (DXBCGetInputSignature(pBytecode, BytecodeSize, &inputParser) != S_OK) {
     errorOut << "Invalid DXBC bytecode: input signature not found\0";
     SM50_RETURN_ERROR(errorObj, ppError, 1);
   }
   CSignatureParser5 outputParser;
-  if (DXBCGetOutputSignature(pBytecode, &outputParser) != S_OK) {
+  if (DXBCGetOutputSignature(pBytecode, BytecodeSize, &outputParser) != S_OK) {
     errorOut << "Invalid DXBC bytecode: output signature not found\0";
     SM50_RETURN_ERROR(errorObj, ppError, 1);
   }

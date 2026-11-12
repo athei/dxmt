@@ -45,41 +45,27 @@ HRESULT CDXBCParser::ReadDXBC( const void* pContainer, UINT ContainerSizeInBytes
         return E_FAIL;
     }
     UINT* pIndex = (UINT*)((BYTE*)pHeader + sizeof( DXBCHeader ));
-    if ((const BYTE*)pContainer + sizeof( UINT ) * pHeader->BlobCount < (const BYTE*)pContainer)
-    {
-        return E_FAIL; // overflow would break the calculation of OffsetOfCurrentSegmentEnd below
-    }
-    UINT OffsetOfCurrentSegmentEnd = (UINT)((BYTE*)pIndex - (const BYTE*)pContainer + sizeof( UINT ) * pHeader->BlobCount - 1);
     // Is the entire index within the container?
-    if (OffsetOfCurrentSegmentEnd > ContainerSizeInBytes)
+    if (pHeader->BlobCount > (ContainerSizeInBytes - sizeof( DXBCHeader )) / sizeof( UINT ))
     {
         return E_FAIL;
     }
     // Is each blob in the index directly after the previous entry and not past the end of the container?
-    UINT OffsetOfLastSegmentEnd = OffsetOfCurrentSegmentEnd;
+    // The offsets are 64-bit, so a blob size near 4 GiB cannot wrap them.
+    UINT64 OffsetOfLastSegmentEnd = sizeof( DXBCHeader ) + (UINT64)sizeof( UINT ) * pHeader->BlobCount;
     for (UINT b = 0; b < pHeader->BlobCount; b++)
     {
-        DXBCBlobHeader* pBlobHeader = (DXBCBlobHeader*)((const BYTE*)pContainer + pIndex[b]);
-        DXBCBlobHeader* pAfterBlobHeader = pBlobHeader + 1;
-
-        if (pAfterBlobHeader < pBlobHeader || pAfterBlobHeader > pContainerEnd)
+        if (pIndex[b] != OffsetOfLastSegmentEnd)
         {
             return E_FAIL;
         }
-        if (((BYTE*)pBlobHeader < (const BYTE*)pContainer) || (pIndex[b] + sizeof( DXBCBlobHeader ) < pIndex[b]))
+        if (sizeof( DXBCBlobHeader ) > ContainerSizeInBytes - OffsetOfLastSegmentEnd)
         {
-            return E_FAIL; // overflow because of bad pIndex[b] value
+            return E_FAIL;
         }
-        if (pIndex[b] + sizeof( DXBCBlobHeader ) + pBlobHeader->BlobSize < pIndex[b])
-        {
-            return E_FAIL; // overflow because of bad pBlobHeader->BlobSize value
-        }
-        OffsetOfCurrentSegmentEnd = pIndex[b] + sizeof( DXBCBlobHeader ) + pBlobHeader->BlobSize - 1;
+        const DXBCBlobHeader* pBlobHeader = (const DXBCBlobHeader*)((const BYTE*)pContainer + pIndex[b]);
+        UINT64 OffsetOfCurrentSegmentEnd = (UINT64)pIndex[b] + sizeof( DXBCBlobHeader ) + pBlobHeader->BlobSize;
         if (OffsetOfCurrentSegmentEnd > ContainerSizeInBytes)
-        {
-            return E_FAIL;
-        }
-        if (OffsetOfLastSegmentEnd != pIndex[b] - 1)
         {
             return E_FAIL;
         }
@@ -93,14 +79,19 @@ HRESULT CDXBCParser::ReadDXBC( const void* pContainer, UINT ContainerSizeInBytes
 }
 
 //---------------------------------------------------------------------------------------------------------------------------------
-// CDXBCParser::ReadDXBCAssumingValidSize()
-HRESULT CDXBCParser::ReadDXBCAssumingValidSize( const void* pContainer )
+// CDXBCParser::ReadDXBCWithinLength()
+HRESULT CDXBCParser::ReadDXBCWithinLength( const void* pContainer, size_t Length )
 {
-    if (!pContainer)
+    if (!pContainer || Length < sizeof( DXBCHeader ))
     {
         return E_FAIL;
     }
-    return ReadDXBC( (const BYTE*)pContainer, DXBCGetSizeAssumingValidPointer( (const BYTE*)pContainer ) );
+    UINT ContainerSizeInBytes = DXBCGetSizeAssumingValidPointer( (const BYTE*)pContainer );
+    if (ContainerSizeInBytes > Length)
+    {
+        return E_FAIL;
+    }
+    return ReadDXBC( (const BYTE*)pContainer, ContainerSizeInBytes );
 }
 
 //---------------------------------------------------------------------------------------------------------------------------------

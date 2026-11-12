@@ -55,18 +55,18 @@ public:
 };
 
 HRESULT ExtractMTLInputLayoutElements(
-    MTLD3D11Device *device, const void *pShaderBytecodeWithInputSignature,
+    MTLD3D11Device *device, const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
     const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs, uint32_t NumElements,
     MTL_SHADER_INPUT_LAYOUT_ELEMENT_DESC *pInputLayoutElementOut,
     uint32_t *pNumElementsOut);
 
 HRESULT ValidateStreamOutputDeclaration(
-    const void *pShaderBytecode, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumEntries,
+    const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumEntries,
     const UINT *pStrides, UINT NumStrides, UINT RasterizedStream, D3D_FEATURE_LEVEL FeatureLevel
 );
 
 HRESULT ExtractMTLStreamOutputElements(
-    MTLD3D11Device *pDevice, const void *pShaderBytecode, UINT NumEntries,
+    MTLD3D11Device *pDevice, const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries,
     const D3D11_SO_DECLARATION_ENTRY *pEntries,
     MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *pStreamOut,
     uint32_t *pNumElementsOut);

@@ -15,11 +15,11 @@ public:
   AddGeometryShader(const void *pBytecode, uint32_t BytecodeLength, ID3D11GeometryShader **ppShader) = 0;
   virtual HRESULT AddComputeShader(const void *pBytecode, uint32_t BytecodeLength, ID3D11ComputeShader **ppShader) = 0;
   virtual HRESULT AddInputLayout(
-      const void *pShaderBytecodeWithInputSignature, const D3D11_INPUT_ELEMENT_DESC *pInputElementDesc,
-      UINT NumElements, IMTLD3D11InputLayout **ppInputLayout
+      const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
+      const D3D11_INPUT_ELEMENT_DESC *pInputElementDesc, UINT NumElements, IMTLD3D11InputLayout **ppInputLayout
   ) = 0;
   virtual HRESULT AddStreamOutputLayout(
-      const void *pShaderBytecode, UINT NumEntries, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumStrides,
+      const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumStrides,
       const UINT *pStrides, UINT RasterizedStream, IMTLD3D11StreamOutputLayout **ppSOLayout
   ) = 0;
   virtual HRESULT AddBlendState(const D3D11_BLEND_DESC1 *pBlendDesc, IMTLD3D11BlendState **ppBlendState) = 0;

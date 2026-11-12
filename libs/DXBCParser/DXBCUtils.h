@@ -11,19 +11,20 @@ class CSignatureParser;
 class CSignatureParser5;
 
 UINT32 DXBCGetSizeAssumingValidPointer(const void *pDXBC);
-HRESULT DXBCGetInputSignature(const void *pBlobContainer,
+// ContainerLength is the number of bytes readable at pBlobContainer
+HRESULT DXBCGetInputSignature(const void *pBlobContainer, size_t ContainerLength,
                               CSignatureParser *pParserToUse,
                               bool bForceStringReference = false);
-HRESULT DXBCGetOutputSignature(const void *pBlobContainer,
+HRESULT DXBCGetOutputSignature(const void *pBlobContainer, size_t ContainerLength,
                                CSignatureParser *pParserToUse,
                                bool bForceStringReference = false);
-HRESULT DXBCGetOutputSignature(const void *pBlobContainer,
+HRESULT DXBCGetOutputSignature(const void *pBlobContainer, size_t ContainerLength,
                                CSignatureParser5 *pParserToUse,
                                bool bForceStringReference = false);
-HRESULT DXBCGetPatchConstantSignature(const void *pBlobContainer,
+HRESULT DXBCGetPatchConstantSignature(const void *pBlobContainer, size_t ContainerLength,
                                       CSignatureParser *pParserToUse,
                                       bool bForceStringReference = false);
-HRESULT DXBCGetRootSignature(const void *pBlobContainer,
+HRESULT DXBCGetRootSignature(const void *pBlobContainer, size_t ContainerLength,
                                       const void **ppBlob, UINT *pByteSize);
 
 //=================================================================================================================================

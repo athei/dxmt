@@ -390,7 +390,7 @@ public:
     }
 
     return pipeline_cache_->AddInputLayout(
-        pShaderBytecodeWithInputSignature, pInputElementDescs, NumElements,
+        pShaderBytecodeWithInputSignature, BytecodeLength, pInputElementDescs, NumElements,
         (IMTLD3D11InputLayout **)ppInputLayout);
   }
 
@@ -488,7 +488,7 @@ public:
         return E_INVALIDARG;
     }
     return ValidateStreamOutputDeclaration(
-        pShaderBytecode, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream, GetFeatureLevel()
+        pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, RasterizedStream, GetFeatureLevel()
     );
   }
 
@@ -507,7 +507,7 @@ public:
 
       Com<IMTLD3D11StreamOutputLayout> so_layout;
       HRESULT hr = pipeline_cache_->AddStreamOutputLayout(
-          pShaderBytecode, NumEntries, pSODeclaration, NumStrides,
+          pShaderBytecode, BytecodeLength, NumEntries, pSODeclaration, NumStrides,
           pBufferStrides, RasterizedStream, &so_layout);
       if (SUCCEEDED(hr))
         return so_layout->QueryInterface(IID_PPV_ARGS(ppGeometryShader));

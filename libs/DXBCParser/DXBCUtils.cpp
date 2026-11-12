@@ -22,11 +22,11 @@ UINT DXBCGetSizeAssumingValidPointer(const void* pDXBC)
 
 //---------------------------------------------------------------------------------------------------------------------------------
 // DXBCGetInputSignature()
-HRESULT DXBCGetInputSignature( const void* pBlobContainer, CSignatureParser* pParserToUse, bool bForceStringReference )
+HRESULT DXBCGetInputSignature( const void* pBlobContainer, size_t ContainerLength, CSignatureParser* pParserToUse, bool bForceStringReference )
 {
     CDXBCParser DXBCParser;
     HRESULT hr = S_OK;
-    if( FAILED(hr = DXBCParser.ReadDXBCAssumingValidSize(pBlobContainer) ) )
+    if( FAILED(hr = DXBCParser.ReadDXBCWithinLength(pBlobContainer, ContainerLength) ) )
     {
         return hr;
     }
@@ -61,11 +61,11 @@ HRESULT DXBCGetInputSignature( const void* pBlobContainer, CSignatureParser* pPa
 
 //---------------------------------------------------------------------------------------------------------------------------------
 // DXBCGetOutputSignature()
-HRESULT DXBCGetOutputSignature( const void* pBlobContainer, CSignatureParser5* pParserToUse, bool bForceStringReference )
+HRESULT DXBCGetOutputSignature( const void* pBlobContainer, size_t ContainerLength, CSignatureParser5* pParserToUse, bool bForceStringReference )
 {
     CDXBCParser DXBCParser;
     HRESULT hr = S_OK;
-    if( FAILED(hr = DXBCParser.ReadDXBCAssumingValidSize(pBlobContainer) ) )
+    if( FAILED(hr = DXBCParser.ReadDXBCWithinLength(pBlobContainer, ContainerLength) ) )
     {
         return hr;
     }
@@ -111,11 +111,11 @@ HRESULT DXBCGetOutputSignature( const void* pBlobContainer, CSignatureParser5* p
     return E_FAIL;
 }
 
-HRESULT DXBCGetOutputSignature( const void* pBlobContainer, CSignatureParser* pParserToUse, bool bForceStringReference)
+HRESULT DXBCGetOutputSignature( const void* pBlobContainer, size_t ContainerLength, CSignatureParser* pParserToUse, bool bForceStringReference)
 {
     CDXBCParser DXBCParser;
     HRESULT hr = S_OK;
-    if( FAILED(hr = DXBCParser.ReadDXBCAssumingValidSize(pBlobContainer) ) )
+    if( FAILED(hr = DXBCParser.ReadDXBCWithinLength(pBlobContainer, ContainerLength) ) )
     {
         return hr;
     }
@@ -147,11 +147,11 @@ HRESULT DXBCGetOutputSignature( const void* pBlobContainer, CSignatureParser* pP
     return E_FAIL;
 }
 
-HRESULT DXBCGetPatchConstantSignature( const void* pBlobContainer, CSignatureParser* pParserToUse, bool bForceStringReference)
+HRESULT DXBCGetPatchConstantSignature( const void* pBlobContainer, size_t ContainerLength, CSignatureParser* pParserToUse, bool bForceStringReference)
 {
     CDXBCParser DXBCParser;
     HRESULT hr = S_OK;
-    if( FAILED(hr = DXBCParser.ReadDXBCAssumingValidSize(pBlobContainer) ) )
+    if( FAILED(hr = DXBCParser.ReadDXBCWithinLength(pBlobContainer, ContainerLength) ) )
     {
         return hr;
     }
@@ -185,10 +185,10 @@ HRESULT DXBCGetPatchConstantSignature( const void* pBlobContainer, CSignaturePar
     return E_FAIL;
 }
 
-HRESULT DXBCGetRootSignature( const void *pBlobContainer, const void **ppBlob, UINT *pByteSize) {
+HRESULT DXBCGetRootSignature( const void *pBlobContainer, size_t ContainerLength, const void **ppBlob, UINT *pByteSize) {
     CDXBCParser DXBCParser;
     HRESULT hr = S_OK;
-    if( FAILED(hr = DXBCParser.ReadDXBCAssumingValidSize(pBlobContainer) ) )
+    if( FAILED(hr = DXBCParser.ReadDXBCWithinLength(pBlobContainer, ContainerLength) ) )
     {
         assert(pBlobContainer);
         return hr;
@@ -282,6 +282,20 @@ typedef struct _D3D10_INTERNALSHADER_SIGNATURE
     UINT Parameters;      // Number of parameters
     UINT ParameterInfo;   // Offset to D3D10_INTERNALSHADER_PARAMETER[Parameters]
 } D3D10_INTERNALSHADER_SIGNATURE, *LPD3D10_INTERNALSHADER_SIGNATURE;
+
+// Whether the Parameters entries of EntrySize bytes at ParameterInfo are
+// within the BlobSize bytes of the signature
+static bool ParametersWithinBlob(const D3D10_INTERNALSHADER_SIGNATURE* pHeader, UINT BlobSize, size_t EntrySize)
+{
+    return (UINT64)pHeader->ParameterInfo + (UINT64)pHeader->Parameters * EntrySize <= BlobSize;
+}
+
+// Bytes of the parsed signature, or 0 when they do not fit in a UINT
+static UINT ParsedSignatureSize(UINT cParameters, UINT64 TotalStringLength)
+{
+    UINT64 Size = (UINT64)cParameters * (sizeof(D3D11_SIGNATURE_PARAMETER) + sizeof(UINT)) + TotalStringLength;
+    return Size > UINT_MAX ? 0 : (UINT)Size;
+}
 
 typedef struct _D3D10_INTERNALSHADER_PARAMETER
 {
@@ -597,13 +611,13 @@ HRESULT CSignatureParser::ReadSignature11_1(const void* pSignature, UINT BlobSiz
     }
 
     // If parameter count is less than MaxParameters calculation of SignatureAndParameterInfoSize will not overflow.
-    const UINT MaxParameters = ((UINT_MAX - sizeof(D3D10_INTERNALSHADER_SIGNATURE)) / sizeof(D3D10_INTERNALSHADER_PARAMETER));
+    const UINT MaxParameters = ((UINT_MAX - sizeof(D3D10_INTERNALSHADER_SIGNATURE)) / sizeof(D3D11_INTERNALSHADER_PARAMETER_11_1));
 
     if (pHeader->Parameters > MaxParameters)
     {
         return E_FAIL;
     }
-    
+
     UINT ParameterInfoSize = pHeader->Parameters * sizeof(D3D11_INTERNALSHADER_PARAMETER_11_1);
     UINT SignatureAndParameterInfoSize = ParameterInfoSize + sizeof(D3D10_INTERNALSHADER_SIGNATURE);
     
@@ -614,13 +628,21 @@ HRESULT CSignatureParser::ReadSignature11_1(const void* pSignature, UINT BlobSiz
 
     // Keep end pointer around for checking
     const void *pEnd = static_cast<const BYTE*>(pSignature) + BlobSize;
+    if (!ParametersWithinBlob(pHeader, BlobSize, sizeof(D3D11_INTERNALSHADER_PARAMETER_11_1)))
+    {
+        return E_FAIL;
+    }
     const D3D11_INTERNALSHADER_PARAMETER_11_1* pParameterInfo = (D3D11_INTERNALSHADER_PARAMETER_11_1*)((const BYTE*)pSignature + pHeader->ParameterInfo);
     UINT cParameters = pHeader->Parameters;
-    UINT TotalStringLength = 0;
+    UINT64 TotalStringLength = 0;
     UINT LastRegister = 0;
     for( UINT i = 0; i < cParameters; i++ )
     {
         UINT StringLength;
+        if (pParameterInfo[i].SemanticName >= BlobSize)
+        {
+            return E_FAIL;
+        }
         if (FAILED(BoundedStringLength((const char*)((const BYTE*)pSignature + pParameterInfo[i].SemanticName),
                                        (const char*) pEnd,
                                         &StringLength)))
@@ -641,9 +663,14 @@ HRESULT CSignatureParser::ReadSignature11_1(const void* pSignature, UINT BlobSiz
         }
         LastRegister = pParameterInfo[i].Register;
     }
+    UINT ParsedSize = ParsedSignatureSize(cParameters, TotalStringLength);
+    if( !ParsedSize )
+    {
+        return E_FAIL;
+    }
     UINT TotalParameterSize = pHeader->Parameters*sizeof(D3D11_SIGNATURE_PARAMETER);
     UINT TotalCharSumsSize = sizeof(UINT)*cParameters; // char sums for each SemanticName
-    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc((TotalParameterSize + TotalCharSumsSize + TotalStringLength)*sizeof(BYTE));
+    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc(ParsedSize);
     if( !m_pSignatureParameters )
     {
         return E_OUTOFMEMORY;
@@ -724,13 +751,21 @@ HRESULT CSignatureParser::ReadSignature4(const void* pSignature, UINT BlobSize, 
 
     // Keep end pointer around for checking
     const void *pEnd = static_cast<const BYTE*>(pSignature) + BlobSize;
+    if (!ParametersWithinBlob(pHeader, BlobSize, sizeof(D3D10_INTERNALSHADER_PARAMETER)))
+    {
+        return E_FAIL;
+    }
     const D3D10_INTERNALSHADER_PARAMETER* pParameterInfo = (D3D10_INTERNALSHADER_PARAMETER*)((const BYTE*)pSignature + pHeader->ParameterInfo);
     UINT cParameters = pHeader->Parameters;
-    UINT TotalStringLength = 0;
+    UINT64 TotalStringLength = 0;
     UINT LastRegister = 0;
     for( UINT i = 0; i < cParameters; i++ )
     {
         UINT StringLength;
+        if (pParameterInfo[i].SemanticName >= BlobSize)
+        {
+            return E_FAIL;
+        }
         if (FAILED(BoundedStringLength((const char*)((const BYTE*)pSignature + pParameterInfo[i].SemanticName),
                                        (const char*) pEnd,
                                         &StringLength)))
@@ -751,9 +786,14 @@ HRESULT CSignatureParser::ReadSignature4(const void* pSignature, UINT BlobSize, 
         }
         LastRegister = pParameterInfo[i].Register;
     }
+    UINT ParsedSize = ParsedSignatureSize(cParameters, TotalStringLength);
+    if( !ParsedSize )
+    {
+        return E_FAIL;
+    }
     UINT TotalParameterSize = pHeader->Parameters*sizeof(D3D11_SIGNATURE_PARAMETER);
     UINT TotalCharSumsSize = sizeof(UINT)*cParameters; // char sums for each SemanticName
-    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc((TotalParameterSize + TotalCharSumsSize + TotalStringLength)*sizeof(BYTE));
+    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc(ParsedSize);
     if( !m_pSignatureParameters )
     {
         return E_OUTOFMEMORY;
@@ -907,10 +947,14 @@ HRESULT CSignatureParser5::ReadSignature11_1(const void* pSignature, UINT BlobSi
 
     // Keep end pointer around for checking
     const void *pEnd = static_cast<const BYTE*>(pSignature) + BlobSize;
-    
+
+    if (!ParametersWithinBlob(pHeader, BlobSize, sizeof(D3D11_INTERNALSHADER_PARAMETER_11_1)))
+    {
+        return E_FAIL;
+    }
     const D3D11_INTERNALSHADER_PARAMETER_11_1* pParameterInfo = (D3D11_INTERNALSHADER_PARAMETER_11_1*)((const BYTE*)pSignature + pHeader->ParameterInfo);
     UINT cParameters = pHeader->Parameters;
-    UINT TotalStringLength = 0;
+    UINT64 TotalStringLength = 0;
     UINT StreamParameters[D3D11_SO_STREAM_COUNT] = {0};
     UINT i = 0;
     for( UINT s = 0; s < D3D11_SO_STREAM_COUNT; s++ )
@@ -927,6 +971,10 @@ HRESULT CSignatureParser5::ReadSignature11_1(const void* pSignature, UINT BlobSi
 
             StreamParameters[s]++;
             UINT StringLength;
+            if (pParameterInfo[i].SemanticName >= BlobSize)
+            {
+                return E_FAIL;
+            }
             if (FAILED(BoundedStringLength((const char*)((const BYTE*)pSignature + pParameterInfo[i].SemanticName),
                                            (const char*) pEnd,
                                             &StringLength)))
@@ -949,9 +997,20 @@ HRESULT CSignatureParser5::ReadSignature11_1(const void* pSignature, UINT BlobSi
             m_NumSigs = s + 1;
         }
     }
+    // The entries are grouped by ascending stream; an entry the loops did not
+    // reach has a name that was not checked
+    if( i < cParameters )
+    {
+        return E_FAIL;
+    }
+    UINT ParsedSize = ParsedSignatureSize(cParameters, TotalStringLength);
+    if( !ParsedSize )
+    {
+        return E_FAIL;
+    }
     UINT TotalParameterSize = pHeader->Parameters*sizeof(D3D11_SIGNATURE_PARAMETER);
     UINT TotalCharSumsSize = sizeof(UINT)*cParameters; // char sums for each SemanticName
-    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc((TotalParameterSize + TotalCharSumsSize + TotalStringLength)*sizeof(BYTE));
+    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc(ParsedSize);
     if( !m_pSignatureParameters )
     {
         return E_OUTOFMEMORY;
@@ -1040,10 +1099,14 @@ HRESULT CSignatureParser5::ReadSignature5(const void* pSignature, UINT BlobSize,
 
     // Keep end pointer around for checking
     const void *pEnd = static_cast<const BYTE*>(pSignature) + BlobSize;
-    
+
+    if (!ParametersWithinBlob(pHeader, BlobSize, sizeof(D3D11_INTERNALSHADER_PARAMETER_FOR_GS)))
+    {
+        return E_FAIL;
+    }
     const D3D11_INTERNALSHADER_PARAMETER_FOR_GS* pParameterInfo = (D3D11_INTERNALSHADER_PARAMETER_FOR_GS*)((const BYTE*)pSignature + pHeader->ParameterInfo);
     UINT cParameters = pHeader->Parameters;
-    UINT TotalStringLength = 0;
+    UINT64 TotalStringLength = 0;
     UINT StreamParameters[D3D11_SO_STREAM_COUNT] = {0};
     UINT i = 0;
     for( UINT s = 0; s < D3D11_SO_STREAM_COUNT; s++ )
@@ -1060,6 +1123,10 @@ HRESULT CSignatureParser5::ReadSignature5(const void* pSignature, UINT BlobSize,
 
             StreamParameters[s]++;
             UINT StringLength;
+            if (pParameterInfo[i].SemanticName >= BlobSize)
+            {
+                return E_FAIL;
+            }
             if (FAILED(BoundedStringLength((const char*)((const BYTE*)pSignature + pParameterInfo[i].SemanticName),
                                            (const char*) pEnd,
                                            &StringLength)))
@@ -1082,9 +1149,20 @@ HRESULT CSignatureParser5::ReadSignature5(const void* pSignature, UINT BlobSize,
             m_NumSigs = s + 1;
         }
     }
+    // The entries are grouped by ascending stream; an entry the loops did not
+    // reach has a name that was not checked
+    if( i < cParameters )
+    {
+        return E_FAIL;
+    }
+    UINT ParsedSize = ParsedSignatureSize(cParameters, TotalStringLength);
+    if( !ParsedSize )
+    {
+        return E_FAIL;
+    }
     UINT TotalParameterSize = pHeader->Parameters*sizeof(D3D11_SIGNATURE_PARAMETER);
     UINT TotalCharSumsSize = sizeof(UINT)*cParameters; // char sums for each SemanticName
-    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc((TotalParameterSize + TotalCharSumsSize + TotalStringLength)*sizeof(BYTE));
+    m_pSignatureParameters = (D3D11_SIGNATURE_PARAMETER*)malloc(ParsedSize);
     if( !m_pSignatureParameters )
     {
         return E_OUTOFMEMORY;

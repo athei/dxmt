@@ -309,7 +309,7 @@ D3D12CreateVersionedRootSignatureDeserializer(
 
   const void *pRawRootSig;
   UINT RawRootSigSize;
-  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, &pRawRootSig, &RawRootSigSize);
+  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, DataSize, &pRawRootSig, &RawRootSigSize);
   if (FAILED(hr))
     return hr;
 
@@ -326,7 +326,7 @@ D3D12CreateRootSignatureDeserializer(const void *pBytecode, SIZE_T DataSize, REF
 
   const void *pRawRootSig;
   UINT RawRootSigSize;
-  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, &pRawRootSig, &RawRootSigSize);
+  HRESULT hr = microsoft::DXBCGetRootSignature(pBytecode, DataSize, &pRawRootSig, &RawRootSigSize);
   if (FAILED(hr))
     return hr;
 
@@ -391,7 +391,7 @@ public:
   Initialize() {
     const void *pRawRootSig;
     UINT RawRootSigSize;
-    HRESULT hr = microsoft::DXBCGetRootSignature(blob_.data(), &pRawRootSig, &RawRootSigSize);
+    HRESULT hr = microsoft::DXBCGetRootSignature(blob_.data(), blob_.size(), &pRawRootSig, &RawRootSigSize);
     if (FAILED(hr))
       return hr;
 
