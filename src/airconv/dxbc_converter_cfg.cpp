@@ -538,6 +538,7 @@ read_control_flow(
     case D3D10_SB_OPCODE_DCL_GLOBAL_FLAGS: {
       if (Inst.m_GlobalFlagsDecl.Flags & D3D11_SB_GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL) {
         func_signature.UseEarlyFragmentTests();
+        sm50_shader->ps_early_fragment_tests = 1;
       }
       if (Inst.m_GlobalFlagsDecl.Flags & D3D11_1_SB_GLOBAL_FLAG_SKIP_OPTIMIZATION) {
         shader_info.skipOptimization = true;

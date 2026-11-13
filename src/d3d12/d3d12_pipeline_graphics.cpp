@@ -566,6 +566,7 @@ public:
       SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
       data_ps.dual_source_blending = dual_source_blending;
       data_ps.disable_depth_output = false;
+      data_ps.depth_bias = SM50_SHADER_DEPTH_BIAS_NONE;
       data_ps.unorm_output_reg_mask = 0;
       data_ps.sample_mask = pDesc->SampleMask;
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
@@ -859,6 +860,7 @@ public:
       SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
       data_ps.dual_source_blending = dual_source_blending;
       data_ps.disable_depth_output = false;
+      data_ps.depth_bias = SM50_SHADER_DEPTH_BIAS_NONE;
       data_ps.unorm_output_reg_mask = 0;
       data_ps.sample_mask = pDesc->SampleMask;
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
@@ -1089,6 +1091,7 @@ public:
       SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
       data_ps.dual_source_blending = dual_source_blending;
       data_ps.disable_depth_output = false;
+      data_ps.depth_bias = SM50_SHADER_DEPTH_BIAS_NONE;
       data_ps.unorm_output_reg_mask = 0;
       data_ps.sample_mask = pDesc->SampleMask;
       data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;

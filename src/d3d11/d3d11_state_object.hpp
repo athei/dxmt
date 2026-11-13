@@ -11,7 +11,14 @@
 DEFINE_COM_INTERFACE("03629ed8-bcdd-4582-8997-3817209a34f4",
                      IMTLD3D11RasterizerState)
     : public ID3D11RasterizerState2 {
-  virtual void SetupRasterizerState(wmtcmd_render_setrasterizerstate& cmd) = 0;
+  /* shader_depth_bias: the fragment function adds the depth bias, so the
+     hardware bias is 0 */
+  virtual void SetupRasterizerState(wmtcmd_render_setrasterizerstate& cmd, bool shader_depth_bias) = 0;
+  /* the SM50_SHADER_DEPTH_BIAS a draw on an emulated D24 target uses */
+  virtual uint8_t ShaderDepthBias() = 0;
+  /* the float4 at SM50_BINDING_INDEX_DEPTH_BIAS, with depth_bias_unit the
+     value of one DepthBias unit */
+  virtual void SetupShaderDepthBias(float bias[4], float depth_bias_unit) = 0;
   virtual bool IsScissorEnabled() = 0;
   virtual uint32_t UAVOnlySampleCount() = 0;
 };

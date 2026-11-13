@@ -520,6 +520,7 @@ initialize_pixel_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
           return io.PopulateOutputDepth(ret, out);
         });
       });
+      shader->ps_has_depth_output = 1;
       break;
     }
     case SemanticKind::Coverage: {
@@ -891,8 +892,10 @@ initialize_shader(dxmt::dxbc::SM50ShaderInternal *shader, const Info &info) {
   for (auto &property : entry.properties) {
     switch (property.tag) {
     case EntryPropertyTag::ShaderFlags: {
-      if (property.shader_flags & kShaderFlagForceEarlyDepthStencilTest)
+      if (property.shader_flags & kShaderFlagForceEarlyDepthStencilTest) {
         func_signature.UseEarlyFragmentTests();
+        shader->ps_early_fragment_tests = 1;
+      }
       break;
     }
     case EntryPropertyTag::NumThreads: {
@@ -1139,10 +1142,13 @@ initialize(
     case microsoft::D3D10_SB_PIXEL_SHADER:
       pRefl->PixelShader.ValidRenderTargets = shader->pso_valid_output_reg_mask;
       pRefl->PixelShader.HasCoverageOutput = shader->ps_has_coverage_output;
+      pRefl->PixelShader.HasDepthOutput = shader->ps_has_depth_output;
+      pRefl->PixelShader.EarlyFragmentTests = shader->ps_early_fragment_tests;
       break;
     case microsoft::D3D10_SB_GEOMETRY_SHADER:
       pRefl->GeometryShader.GSPassThrough = ~0u;
       pRefl->GeometryShader.Primitive = shader->gs_input_primitive;
+      pRefl->GeometryShader.OutputTopology = shader->gs_output_topology;
       break;
     case microsoft::D3D11_SB_HULL_SHADER: {
       auto threads_per_patch = next_pow2(shader->hull_maximum_threads_per_patch);

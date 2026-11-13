@@ -37,7 +37,8 @@ public:
         depth_stencil_format(pDesc->DepthStencilFormat), device_(pDevice),
         pBlendState(pDesc->BlendState),
         RasterizationEnabled(pDesc->RasterizationEnabled),
-        SampleCount(pDesc->SampleCount) {
+        SampleCount(pDesc->SampleCount),
+        ShaderDepthBias(pDesc->ShaderDepthBias) {
     if (pDesc->RasterizationEnabled && !pDesc->PixelShader)
       num_rtvs = 0;
     uint32_t unorm_output_reg_mask = 0;
@@ -82,7 +83,7 @@ public:
       PixelShader = pDesc->PixelShader->get_shader(ShaderVariantPixel{
           pDesc->SampleMask, pDesc->BlendState->IsDualSourceBlending(),
           depth_stencil_format == WMTPixelFormatInvalid,
-          unorm_output_reg_mask});
+          unorm_output_reg_mask, pDesc->ShaderDepthBias});
       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
     } else {
       PixelShader = nullptr;
@@ -141,8 +142,12 @@ public:
     info.immutable_mesh_buffers = (1 << 29) | (1 << 30);
     info.immutable_fragment_buffers = (1 << 29) | (1 << 30);
 
+    WMT::Reference<WMT::Function> depth_bias_function;
     if (PixelShader) {
       info.fragment_function = ps.Function;
+    } else if (ShaderDepthBias) {
+      depth_bias_function = GetDepthBiasFragmentFunction(device_, ShaderDepthBias);
+      info.fragment_function = depth_bias_function;
     }
     info.rasterization_enabled = RasterizationEnabled;
 
@@ -163,6 +168,10 @@ public:
       pBlendState->SetupMetalPipelineDescriptor(
           (WMTRenderPipelineBlendInfo *)&info, num_rtvs, ps_valid_render_targets);
     }
+    // Without a fragment function there was no coverage from alpha, and this
+    // one writes no alpha
+    if (depth_bias_function)
+      info.alpha_to_coverage_enabled = false;
 
     info.raster_sample_count = SampleCount;
     // so far it's a fixed constant
@@ -202,6 +211,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> state_rasterization_;
   bool RasterizationEnabled;
   UINT SampleCount;
+  uint8_t ShaderDepthBias;
 
   MTL_SHADER_REFLECTION hull_reflection;
 

@@ -172,6 +172,10 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.unorm_output_reg_mask);
   h.update(variant.dual_source_blending);
   h.update(variant.disable_depth_output);
+  // Hashed only when set, so that the cached variants without the bias stay
+  // valid
+  if (variant.depth_bias)
+    h.update(variant.depth_bias);
   auto variant_digest = h.final();
   std::string func_name = "ps_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
 
@@ -182,6 +186,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.sample_mask = variant.sample_mask;
     data.dual_source_blending = variant.dual_source_blending;
     data.disable_depth_output = variant.disable_depth_output;
+    data.depth_bias = variant.depth_bias;
     data.unorm_output_reg_mask = variant.unorm_output_reg_mask;
     memset(data.pixel_formats, 0, sizeof(data.pixel_formats));
 

@@ -159,10 +159,16 @@ struct D3D11DepthStencilView : ID3D11DepthStencilView {
   RenamableTexturePool *renamable_{};
   ResourceSubsetState subset_{};
   uint32_t bind_flags_{};
+  bool emulated_d24_{};
 
   WMTPixelFormat
   pixelFormat() const {
     return format_;
+  };
+  /* D24 stored in a float format, see MTL_DXGI_FORMAT_EMULATED_D24 */
+  bool
+  emulatedD24() const {
+    return emulated_d24_;
   };
   const MTL_RENDER_PASS_ATTACHMENT_DESC &
   description() const {

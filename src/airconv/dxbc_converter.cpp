@@ -323,12 +323,14 @@ llvm::Error convert_dxbc_pixel_shader(
   uint32_t pso_sample_mask = 0xffffffff;
   bool pso_dual_source_blending = false;
   bool pso_disable_depth_output = false;
+  uint8_t pso_depth_bias = SM50_SHADER_DEPTH_BIAS_NONE;
   uint32_t pso_unorm_output_reg_mask = 0;
   uint32_t *pso_pixel_formats = nullptr;
   SM50_SHADER_PSO_PIXEL_SHADER_DATA *pso_data = nullptr;
   if (args_get_data<SM50_SHADER_PSO_PIXEL_SHADER, SM50_SHADER_PSO_PIXEL_SHADER_DATA>(pArgs, &pso_data)) {
     pso_dual_source_blending = pso_data->dual_source_blending;
     pso_disable_depth_output = pso_data->disable_depth_output;
+    pso_depth_bias = pso_data->depth_bias;
     pso_unorm_output_reg_mask = pso_data->unorm_output_reg_mask;
     pso_sample_mask = pso_data->sample_mask;
     pso_pixel_formats = pso_data->pixel_formats;
@@ -361,6 +363,30 @@ llvm::Error convert_dxbc_pixel_shader(
     for (auto &p : pShaderInternal->signature_handlers) {
       p(sig_ctx);
     }
+  }
+  if (pso_depth_bias != SM50_SHADER_DEPTH_BIAS_NONE) {
+    auto depth_argument = pso_depth_bias == SM50_SHADER_DEPTH_BIAS_GREATER ? air::DepthArgument::greater
+                          : pso_depth_bias == SM50_SHADER_DEPTH_BIAS_LESS  ? air::DepthArgument::less
+                                                                            : air::DepthArgument::any;
+    auto position_index =
+      func_signature.DefineInput(air::InputPosition{.interpolation = air::Interpolation::center_no_perspective});
+    auto bias_index = func_signature.DefineInput(air::ArgumentBindingBuffer{
+      .buffer_size = {},
+      .location_index = SM50_BINDING_INDEX_DEPTH_BIAS,
+      .array_size = 0,
+      .memory_access = air::MemoryAccess::read,
+      .address_space = air::AddressSpace::constant,
+      .type = air::msl_float4,
+      .arg_name = "depth_bias",
+      .raster_order_group = {}
+    });
+    auto depth_index = func_signature.DefineOutput(air::OutputDepth{.depth_argument = depth_argument});
+    prologue.Add([=](IOHelper &io) -> llvm::Error {
+      return io.CreateBiasedDepthOutputRegister(position_index, bias_index, depth_argument);
+    });
+    epilogue.Add([=](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
+      return io.PopulateOutputDepth(value, depth_index);
+    });
   }
   if (pso_sample_mask != 0xffffffff) {
     auto assigned_index =
@@ -1253,10 +1279,13 @@ AIRCONV_API int SM50Initialize(
         pRefl->GeometryShader.GSPassThrough = ~0u;
       }
       pRefl->GeometryShader.Primitive = sm50_shader->gs_input_primitive;
+      pRefl->GeometryShader.OutputTopology = sm50_shader->gs_output_topology;
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       pRefl->PixelShader.ValidRenderTargets = sm50_shader->pso_valid_output_reg_mask;
       pRefl->PixelShader.HasCoverageOutput = sm50_shader->ps_has_coverage_output;
+      pRefl->PixelShader.HasDepthOutput = sm50_shader->ps_has_depth_output;
+      pRefl->PixelShader.EarlyFragmentTests = sm50_shader->ps_early_fragment_tests;
     }
     pRefl->NumOutputElement = sm50_shader->max_output_register;
     pRefl->ArgumentTableQwords = binding_table.Size();

@@ -3,10 +3,21 @@
 #include "d3d11_pipeline.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_shader.hpp"
+#include "dxmt_command_queue.hpp"
 #include "log/log.hpp"
 #include <atomic>
 
 namespace dxmt {
+
+static_assert(kDepthBiasArgumentIndex == SM50_BINDING_INDEX_DEPTH_BIAS);
+
+WMT::Reference<WMT::Function>
+GetDepthBiasFragmentFunction(MTLD3D11Device *pDevice, uint8_t ShaderDepthBias) {
+  const char *name = ShaderDepthBias == SM50_SHADER_DEPTH_BIAS_GREATER ? "fs_depth_bias_greater"
+                     : ShaderDepthBias == SM50_SHADER_DEPTH_BIAS_LESS  ? "fs_depth_bias_less"
+                                                                       : "fs_depth_bias_any";
+  return pDevice->GetDXMTDevice().queue().cmd_library.getLibrary().newFunction(name);
+}
 
 class MTLCompiledGraphicsPipelineImpl
     : public MTLCompiledGraphicsPipeline {
@@ -18,7 +29,8 @@ public:
         topology_class(pDesc->TopologyClass), device_(pDevice),
         pBlendState(pDesc->BlendState),
         RasterizationEnabled(pDesc->RasterizationEnabled),
-        SampleCount(pDesc->SampleCount) {
+        SampleCount(pDesc->SampleCount),
+        ShaderDepthBias(pDesc->ShaderDepthBias) {
     uint32_t unorm_output_reg_mask = 0;
     for (unsigned i = 0; i < num_rtvs; i++) {
       rtv_formats[i] = pDesc->ColorAttachmentFormats[i];
@@ -38,7 +50,7 @@ public:
       PixelShader = pDesc->PixelShader->get_shader(ShaderVariantPixel{
           pDesc->SampleMask, pDesc->BlendState->IsDualSourceBlending(),
           depth_stencil_format == WMTPixelFormatInvalid,
-          unorm_output_reg_mask});
+          unorm_output_reg_mask, pDesc->ShaderDepthBias});
       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
     } else {
       PixelShader = nullptr;
@@ -69,8 +81,12 @@ public:
 
     info.vertex_function = vs.Function;
 
+    WMT::Reference<WMT::Function> depth_bias_function;
     if (PixelShader) {
       info.fragment_function = ps.Function;
+    } else if (ShaderDepthBias) {
+      depth_bias_function = GetDepthBiasFragmentFunction(device_, ShaderDepthBias);
+      info.fragment_function = depth_bias_function;
     }
     info.rasterization_enabled = RasterizationEnabled;
 
@@ -78,6 +94,8 @@ public:
       if (rtv_formats[i] == WMTPixelFormatInvalid)
         continue;
       info.colors[i].pixel_format = rtv_formats[i];
+      if (depth_bias_function)
+        info.colors[i].write_mask = WMTColorWriteMaskNone;
     }
 
     if (depth_stencil_format != WMTPixelFormatInvalid) {
@@ -90,6 +108,10 @@ public:
     if (pBlendState) {
       pBlendState->SetupMetalPipelineDescriptor((WMTRenderPipelineBlendInfo *)&info, num_rtvs, ps_valid_render_targets);
     }
+    // Without a fragment function there was no coverage from alpha, and this
+    // one writes no alpha
+    if (depth_bias_function)
+      info.alpha_to_coverage_enabled = false;
 
     info.input_primitive_topology = topology_class;
     info.raster_sample_count = SampleCount;
@@ -129,6 +151,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> state_;
   bool RasterizationEnabled;
   UINT SampleCount;
+  uint8_t ShaderDepthBias;
 };
 
 std::unique_ptr<MTLCompiledGraphicsPipeline>

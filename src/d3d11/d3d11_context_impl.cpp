@@ -168,6 +168,11 @@ to_metal_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY topo) {
   return WMTPrimitiveTopologyClassUnspecified;
 }
 
+/* D3D applies DepthBias to a UNORM depth buffer in units of the smallest value
+   above 0 it represents; Metal applies it with the floating point rule to the
+   Depth32Float that holds an emulated D24 */
+constexpr float kD24DepthBiasUnit = 1.0f / 16777215.0f;
+
 inline bool is_strip_topology(D3D11_PRIMITIVE_TOPOLOGY topo) {
   switch (topo) {
   case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
@@ -3259,6 +3264,9 @@ public:
         if (current_rs->IsScissorEnabled() != expected->IsScissorEnabled()) {
           dirty_state.set(DirtyState::Scissors);
         }
+        if (IsEmulatedD24Bound() && current_rs->ShaderDepthBias() != expected->ShaderDepthBias()) {
+          InvalidateRenderPipeline();
+        }
         state_.Rasterizer.RasterizerState = expected.ptr();
         dirty_state.set(DirtyState::RasterizerState);
       } else {
@@ -3268,6 +3276,10 @@ public:
       if (state_.Rasterizer.RasterizerState) {
         if (state_.Rasterizer.RasterizerState->IsScissorEnabled() != default_rasterizer_state->IsScissorEnabled()) {
           dirty_state.set(DirtyState::Scissors);
+        }
+        if (IsEmulatedD24Bound() &&
+            state_.Rasterizer.RasterizerState->ShaderDepthBias() != default_rasterizer_state->ShaderDepthBias()) {
+          InvalidateRenderPipeline();
         }
       }
       state_.Rasterizer.RasterizerState = nullptr;
@@ -4878,6 +4890,59 @@ public:
       Desc.IndexBufferFormat = SM50_INDEX_BUFFER_FORMAT_NONE;
     }
     Desc.SampleCount = state_.OutputMerger.SampleCount;
+    Desc.ShaderDepthBias = UseShaderDepthBias(Desc);
+  }
+
+  bool
+  IsEmulatedD24Bound() {
+    return state_.OutputMerger.DSV && state_.OutputMerger.DSV->emulatedD24();
+  }
+
+  /**
+  The SM50_SHADER_DEPTH_BIAS with which the fragment function applies the
+  depth bias of an emulated D24 target, see kD24DepthBiasUnit; unless NONE,
+  the hardware bias is 0.
+  */
+  uint8_t
+  UseShaderDepthBias(const MTL_GRAPHICS_PIPELINE_DESC &Desc) {
+    if (!Desc.RasterizationEnabled || !IsEmulatedD24Bound())
+      return SM50_SHADER_DEPTH_BIAS_NONE;
+    IMTLD3D11RasterizerState *rs =
+        state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state;
+    uint8_t depth_bias = rs->ShaderDepthBias();
+    if (depth_bias == SM50_SHADER_DEPTH_BIAS_NONE)
+      return SM50_SHADER_DEPTH_BIAS_NONE;
+    // A depth written by the fragment function is the same for every sample of the pixel
+    if (Desc.SampleCount != 1)
+      return SM50_SHADER_DEPTH_BIAS_NONE;
+    // D3D biases triangles only, wireframe ones included
+    if (Desc.HullShader) {
+      // FinalizeTessellationRenderPipeline draws triangles only
+    } else if (Desc.GeometryShader && Desc.GSPassthrough == ~0u) {
+      // The tokenized output topology has the value of D3D_PRIMITIVE_TOPOLOGY
+      if (Desc.GeometryShader->reflection().GeometryShader.OutputTopology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
+        return SM50_SHADER_DEPTH_BIAS_NONE;
+    } else if (Desc.TopologyClass != WMTPrimitiveTopologyClassTriangle) {
+      return SM50_SHADER_DEPTH_BIAS_NONE;
+    }
+    if (Desc.PixelShader) {
+      auto &ps = Desc.PixelShader->reflection().PixelShader;
+      // A depth output of the shader replaces the biased depth, and early depth
+      // testing leaves no depth to write
+      if (ps.HasDepthOutput || ps.EarlyFragmentTests)
+        return SM50_SHADER_DEPTH_BIAS_NONE;
+    }
+    return depth_bias;
+  }
+
+  void
+  UpdateShaderDepthBias(uint8_t ShaderDepthBias) {
+    bool shader_depth_bias = ShaderDepthBias != SM50_SHADER_DEPTH_BIAS_NONE;
+    if (shader_depth_bias_ == shader_depth_bias)
+      return;
+    shader_depth_bias_ = shader_depth_bias;
+    // The rasterizer state command sets the hardware bias and the shader's
+    dirty_state.set(DirtyState::RasterizerState);
   }
 
   template <bool IndexedDraw>
@@ -4922,6 +4987,7 @@ public:
 
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
+    UpdateShaderDepthBias(pipelineDesc.ShaderDepthBias);
 
     if (FAILED(device->CreateTessellationMeshPipeline(&pipelineDesc, &pipeline))) {
       return DrawCallStatus::Invalid;
@@ -4974,6 +5040,7 @@ public:
 
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
+    UpdateShaderDepthBias(pipelineDesc.ShaderDepthBias);
     device->CreateGeometryPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       auto render_encoder = enc.currentRenderEncoder();
@@ -5031,6 +5098,7 @@ public:
 
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
+    UpdateShaderDepthBias(pipelineDesc.ShaderDepthBias);
 
     device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
@@ -5087,10 +5155,19 @@ public:
     if (dirty_state.any(DirtyState::RasterizerState)) {
       IMTLD3D11RasterizerState *state =
           state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state;
-      EmitST([state](ArgumentEncodingContext& enc) {
+      EmitST([state, shader_depth_bias = shader_depth_bias_](ArgumentEncodingContext& enc) {
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setrasterizerstate>();
         cmd.type = WMTRenderCommandSetRasterizerState;
-        state->SetupRasterizerState(cmd);
+        state->SetupRasterizerState(cmd, shader_depth_bias);
+        if (shader_depth_bias) {
+          auto &setbias = enc.encodeRenderCommand<wmtcmd_render_setbytes>();
+          setbias.type = WMTRenderCommandSetFragmentBytes;
+          auto bias = (float *)enc.allocate_cpu_heap(sizeof(float) * 4, 16);
+          state->SetupShaderDepthBias(bias, kD24DepthBiasUnit);
+          setbias.bytes.set(bias);
+          setbias.length = sizeof(float) * 4;
+          setbias.index = kDepthBiasArgumentIndex;
+        }
       });
     }
     if (dirty_state.any(DirtyState::BlendFactorAndStencilRef)) {
@@ -5343,6 +5420,8 @@ protected:
   MTLD3D11Device *device;
   CommandBufferState cmdbuf_state = CommandBufferState::Idle;
   CommandBufferState previous_render_pipeline_state = CommandBufferState::Idle;
+  /* ShaderDepthBias of the last pipeline */
+  bool shader_depth_bias_ = false;
   ContextInternalState &ctx_state;
   ContextInternalState::device_mutex_t &mutex;
 

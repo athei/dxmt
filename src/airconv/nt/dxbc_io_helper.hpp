@@ -41,6 +41,14 @@ public:
 
   llvm::Error CreateDepthOutputRegister();
 
+  /* Stores the depth of the position input with the rasterizer's depth bias
+     added into a new depth output register; the bias argument is the float4 of
+     SM50_BINDING_INDEX_DEPTH_BIAS. With DepthArgument greater or less, the
+     stored depth is kept on that side of the position's depth */
+  llvm::Error CreateBiasedDepthOutputRegister(
+      uint32_t PositionArgumentIndex, uint32_t BiasArgumentIndex, air::DepthArgument DepthArgument
+  );
+
   llvm::Error CreateStencilRefOutputRegister();
 
   llvm::Error CreateCoverageMaskOutputRegister();

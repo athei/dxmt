@@ -31,6 +31,8 @@ enum SM50_BINDING_INDEX: uint32_t {
   /* For multiple stages in the same shader function */
   SM50_BINDING_INDEX_CONSTANT_BUFFER2 = 6,
   SM50_BINDING_INDEX_ARGUMENT_TABLE2 = 7,
+  /* float4 (constant bias, slope scale, clamp, unused) of the pixel shader depth bias */
+  SM50_BINDING_INDEX_DEPTH_BIAS = 8,
 
   SM50_BINDING_INDEX_ROOT_ARGUMENTS = 0,
   SM50_BINDING_INDEX_STATIC_SAMPLERS = 1,
@@ -88,6 +90,7 @@ struct MTL_GEOMETRY_SHADER_REFLECTION {
     uint32_t GSPassThrough;
   };
   uint32_t Primitive;
+  uint32_t OutputTopology;
 };
 
 struct MTL_POST_TESSELLATOR_REFLECTION {
@@ -97,6 +100,8 @@ struct MTL_POST_TESSELLATOR_REFLECTION {
 struct MTL_PIXEL_SHADER_REFLECTION {
   uint32_t ValidRenderTargets;
   uint32_t HasCoverageOutput;
+  uint32_t HasDepthOutput : 1;
+  uint32_t EarlyFragmentTests : 1;
 };
 
 struct MTL_SHADER_REFLECTION {
@@ -246,12 +251,26 @@ struct SM50_SHADER_COMMON_DATA {
   enum SM50_SHADER_FLAG flags;
 };
 
+/** The depth bias a pixel shader adds, and what the written depth promises */
+enum SM50_SHADER_DEPTH_BIAS {
+  SM50_SHADER_DEPTH_BIAS_NONE = 0,
+  /** the bias can have either sign: depth(any) */
+  SM50_SHADER_DEPTH_BIAS_ANY = 1,
+  /** the bias is never negative: depth(greater) */
+  SM50_SHADER_DEPTH_BIAS_GREATER = 2,
+  /** the bias is never positive: depth(less) */
+  SM50_SHADER_DEPTH_BIAS_LESS = 3,
+};
+
 struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   uint32_t sample_mask;
   bool dual_source_blending;
   bool disable_depth_output;
+  /** enum SM50_SHADER_DEPTH_BIAS: write the depth with the bias at
+      SM50_BINDING_INDEX_DEPTH_BIAS added */
+  uint8_t depth_bias;
   uint32_t unorm_output_reg_mask;
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];

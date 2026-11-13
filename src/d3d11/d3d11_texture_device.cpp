@@ -22,6 +22,7 @@
 #include "d3d11_enumerable.hpp"
 #include "d3d11_view.hpp"
 #include "dxmt_dynamic.hpp"
+#include "dxmt_format.hpp"
 #include "dxmt_staging.hpp"
 #include "dxmt_texture.hpp"
 #include "d3d11_resource.hpp"
@@ -112,6 +113,9 @@ private:
       this->pass_desc_ = attachment_desc;
       this->renamable_ = pResource->renamable_.ptr();
       this->readonly_flags_ = this->desc.Flags & 0b11;
+      MTL_DXGI_FORMAT_DESC format_desc;
+      this->emulated_d24_ = SUCCEEDED(MTLQueryDXGIFormat(pDevice->GetMTLDevice(), pDesc->Format, format_desc)) &&
+                            (format_desc.Flag & MTL_DXGI_FORMAT_EMULATED_D24);
       this->subset_ = ResourceSubsetState(
         &descriptor,
         this->texture_->miplevelCount(),

@@ -18,11 +18,13 @@
 
 
 #include "Metal.hpp"
+#include "airconv_public.h"
 #include "d3d11_device.hpp"
 #include "d3d11_state_object.hpp"
 #include "dxmt_sampler.hpp"
 #include "log/log.hpp"
 #include "../d3d10/d3d10_state_object.hpp"
+#include <cmath>
 
 namespace dxmt {
 
@@ -432,7 +434,7 @@ public:
     *pDesc = desc_;
   }
 
-  void SetupRasterizerState(wmtcmd_render_setrasterizerstate& cmd) {
+  void SetupRasterizerState(wmtcmd_render_setrasterizerstate& cmd, bool shader_depth_bias) {
 
     cmd.fill_mode = desc_.FillMode == D3D11_FILL_SOLID ? WMTTriangleFillModeFill : WMTTriangleFillModeLines;
 
@@ -451,9 +453,15 @@ public:
     // https://github.com/gpuweb/gpuweb/issues/2100#issuecomment-924536243
     cmd.depth_clip_mode = desc_.DepthClipEnable ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
 
-    cmd.depth_bias = desc_.DepthBias;
-    cmd.scole_scale = desc_.SlopeScaledDepthBias;
-    cmd.depth_bias_clamp = desc_.DepthBiasClamp;
+    if (shader_depth_bias) {
+      cmd.depth_bias = 0;
+      cmd.scole_scale = 0;
+      cmd.depth_bias_clamp = 0;
+    } else {
+      cmd.depth_bias = desc_.DepthBias;
+      cmd.scole_scale = desc_.SlopeScaledDepthBias;
+      cmd.depth_bias_clamp = desc_.DepthBiasClamp;
+    }
 
     cmd.winding = desc_.FrontCounterClockwise ? WMTWindingCounterClockwise: WMTWindingClockwise;
 
@@ -468,6 +476,28 @@ public:
     // desc_.ScissorEnable : handled outside
 
     // desc_.ForcedSampleCount : handled outside
+  }
+
+  uint8_t ShaderDepthBias() {
+    // Only the DepthBias term depends on the format; Metal's slope term is
+    // D3D's, and more precise than the derivatives of the shader's depth
+    if (desc_.DepthBias == 0)
+      return SM50_SHADER_DEPTH_BIAS_NONE;
+    // With both terms of one sign, the clamp keeps it or replaces it with a
+    // bound of the same sign, so the bias never crosses 0
+    bool slope_finite = std::isfinite(desc_.SlopeScaledDepthBias);
+    if (desc_.DepthBias > 0 && slope_finite && desc_.SlopeScaledDepthBias >= 0.0f)
+      return SM50_SHADER_DEPTH_BIAS_GREATER;
+    if (desc_.DepthBias < 0 && slope_finite && desc_.SlopeScaledDepthBias <= 0.0f)
+      return SM50_SHADER_DEPTH_BIAS_LESS;
+    return SM50_SHADER_DEPTH_BIAS_ANY;
+  }
+
+  void SetupShaderDepthBias(float bias[4], float depth_bias_unit) {
+    bias[0] = (float)desc_.DepthBias * depth_bias_unit;
+    bias[1] = desc_.SlopeScaledDepthBias;
+    bias[2] = desc_.DepthBiasClamp;
+    bias[3] = 0.0f;
   }
 
   bool IsScissorEnabled() { return desc_.ScissorEnable; }

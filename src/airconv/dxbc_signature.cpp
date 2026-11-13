@@ -522,6 +522,7 @@ void handle_signature_ps(
           return io.CreateDepthOutputRegister();
         });
       });
+      sm50_shader->ps_has_depth_output = 1;
       signature_handlers.push_back([=](SignatureContext &ctx) {
         if (ctx.disable_depth_output)
           return;

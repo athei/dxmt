@@ -18,6 +18,7 @@
  */
 
 #include <metal_common>
+#include <metal_graphics>
 #include <metal_texture>
 #include <metal_math>
 #include "dxmt_command_constants.hpp"
@@ -236,6 +237,48 @@ struct depth_out {
   constant float4& clear_value [[buffer(kCustomBufferArgumentIndex0)]]
 ) {
   return {clear_value.x};
+}
+
+/* Same computation as the depth bias airconv adds to pixel shaders, for draws
+   without one; SM50_SHADER_DEPTH_BIAS picks the variant */
+float biased_depth(float z, float4 depth_bias) {
+  float max_slope = max(abs(dfdx(z)), abs(dfdy(z)));
+  float bias = depth_bias.x + depth_bias.y * max_slope;
+  float bias_clamp = depth_bias.z;
+  if (bias_clamp > 0)
+    bias = min(bias_clamp, bias);
+  else if (bias_clamp < 0)
+    bias = max(bias_clamp, bias);
+  return saturate(z + bias);
+}
+
+struct depth_out_greater {
+  float depth [[depth(greater)]];
+};
+
+struct depth_out_less {
+  float depth [[depth(less)]];
+};
+
+[[fragment]] depth_out fs_depth_bias_any (
+  float4 position [[position]],
+  constant float4& depth_bias [[buffer(kDepthBiasArgumentIndex)]]
+) {
+  return {biased_depth(position.z, depth_bias)};
+}
+
+[[fragment]] depth_out_greater fs_depth_bias_greater (
+  float4 position [[position]],
+  constant float4& depth_bias [[buffer(kDepthBiasArgumentIndex)]]
+) {
+  return {max(position.z, biased_depth(position.z, depth_bias))};
+}
+
+[[fragment]] depth_out_less fs_depth_bias_less (
+  float4 position [[position]],
+  constant float4& depth_bias [[buffer(kDepthBiasArgumentIndex)]]
+) {
+  return {min(position.z, biased_depth(position.z, depth_bias))};
 }
 
 struct present_data {

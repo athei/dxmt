@@ -10,6 +10,8 @@ namespace dxmt {
 
 constexpr CONSTANT auto kCustomBufferArgumentIndex0 = 30;
 constexpr CONSTANT auto kCustomBufferArgumentIndex1 = 29;
+/* SM50_BINDING_INDEX_DEPTH_BIAS of airconv */
+constexpr CONSTANT auto kDepthBiasArgumentIndex = 8;
 
 constexpr CONSTANT auto kPresentFCIndex_BackbufferSizeMatched = 0x100;
 constexpr CONSTANT auto kPresentFCIndex_BackbufferIsSRGB = 0x103;

@@ -307,6 +307,44 @@ IOHelper::CreateDepthOutputRegister() {
 }
 
 llvm::Error
+IOHelper::CreateBiasedDepthOutputRegister(
+    uint32_t position_at, uint32_t bias_at, air::DepthArgument depth_argument
+) {
+  if (auto err = CreateDepthOutputRegister())
+    return err;
+  auto z = ir.CreateExtractElement(function->getArg(position_at), uint64_t(2));
+  auto bias_ptr = ir.CreateBitCast(
+      function->getArg(bias_at), types._float4->getPointerTo((uint32_t)air::AddressSpace::constant)
+  );
+  auto bias_args = ir.CreateLoad(types._float4, bias_ptr);
+  auto constant_bias = ir.CreateExtractElement(bias_args, uint64_t(0));
+  auto slope_scale = ir.CreateExtractElement(bias_args, uint64_t(1));
+  auto clamp = ir.CreateExtractElement(bias_args, uint64_t(2));
+  // the depth is linear in screen space, so its derivatives are the slopes of
+  // the primitive's plane
+  auto max_slope = air.CreateFPBinOp(
+      llvm::air::AIRBuilder::fmax, air.CreateFPUnOp(llvm::air::AIRBuilder::fabs, air.CreateDerivative(z, false)),
+      air.CreateFPUnOp(llvm::air::AIRBuilder::fabs, air.CreateDerivative(z, true))
+  );
+  llvm::Value *bias = ir.CreateFAdd(constant_bias, ir.CreateFMul(slope_scale, max_slope));
+  auto clamped_above = air.CreateFPBinOp(llvm::air::AIRBuilder::fmin, clamp, bias);
+  auto clamped_below = air.CreateFPBinOp(llvm::air::AIRBuilder::fmax, clamp, bias);
+  bias = ir.CreateSelect(
+      ir.CreateFCmpOGT(clamp, air.getFloat(0.0f)), clamped_above,
+      ir.CreateSelect(ir.CreateFCmpOLT(clamp, air.getFloat(0.0f)), clamped_below, bias)
+  );
+  auto depth = air.CreateFPUnOp(llvm::air::AIRBuilder::saturate, ir.CreateFAdd(z, bias));
+  // The saturation can cross the position's depth only where that lies
+  // outside [0, 1]; a depth(greater) or depth(less) output must not
+  if (depth_argument == air::DepthArgument::greater)
+    depth = air.CreateFPBinOp(llvm::air::AIRBuilder::fmax, z, depth, false);
+  else if (depth_argument == air::DepthArgument::less)
+    depth = air.CreateFPBinOp(llvm::air::AIRBuilder::fmin, z, depth, false);
+  ir.CreateStore(depth, io.depth_output_reg);
+  return llvm::Error::success();
+}
+
+llvm::Error
 IOHelper::CreateStencilRefOutputRegister() {
   if (io.stencil_ref_reg != nullptr)
     return llvm::make_error<UnsupportedFeature>("oStencil is defined twice");

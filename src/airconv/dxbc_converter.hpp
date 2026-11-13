@@ -379,6 +379,8 @@ public:
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
   uint32_t ps_has_coverage_output = 0;
+  uint32_t ps_has_depth_output = 0;
+  uint32_t ps_early_fragment_tests = 0;
 
   BasicBlock *entry() const {
     return bbs.front().get();
