@@ -170,6 +170,18 @@ public:
     encoder.setVertexBuffer({}, 0, kCustomBufferArgumentIndex0);
   }
 
+  /* The pipelines of the vertex functions so_draw_prologue and so_draw_auto,
+     each run by a draw of one point with its task at kCustomBufferArgumentIndex0 */
+  WMT::RenderPipelineState
+  streamOutputDrawPrologue() {
+    return so_draw_prologue;
+  }
+
+  WMT::RenderPipelineState
+  streamOutputDrawAuto() {
+    return so_draw_auto;
+  }
+
 private:
   void setComputePipelineState(WMT::ComputePipelineState state, const WMTSize &threadgroup_size);
 
@@ -198,6 +210,8 @@ private:
 
   WMT::Reference<WMT::RenderPipelineState> gs_draw_arguments_marshal;
   WMT::Reference<WMT::RenderPipelineState> ts_draw_arguments_marshal;
+  WMT::Reference<WMT::RenderPipelineState> so_draw_prologue;
+  WMT::Reference<WMT::RenderPipelineState> so_draw_auto;
 };
 
 class DepthStencilBlitContext {

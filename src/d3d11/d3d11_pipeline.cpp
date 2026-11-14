@@ -40,7 +40,7 @@ public:
     if (pDesc->SOLayout) {
       VertexShader =
           pDesc->VertexShader->get_shader(ShaderVariantVertexStreamOutput{
-              pDesc->InputLayout, (uint64_t)pDesc->SOLayout});
+              pDesc->InputLayout, (uint64_t)pDesc->SOLayout, pDesc->SOTopology});
     } else {
       VertexShader = pDesc->VertexShader->get_shader(ShaderVariantVertex{
           pDesc->InputLayout, pDesc->GSPassthrough, !pDesc->RasterizationEnabled});

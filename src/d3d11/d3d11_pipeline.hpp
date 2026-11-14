@@ -29,6 +29,9 @@ struct MTL_GRAPHICS_PIPELINE_DESC {
   /* SM50_SHADER_DEPTH_BIAS: unless NONE, the fragment function adds the depth
      bias and the hardware bias is 0 */
   uint8_t ShaderDepthBias;
+  /* SM50_STREAM_OUTPUT_TOPOLOGY of a pipeline that streams out from the
+     vertex shader */
+  uint8_t SOTopology;
 };
 
 struct MTL_COMPUTE_PIPELINE_DESC {
@@ -70,6 +73,7 @@ template <> struct hash<MTL_GRAPHICS_PIPELINE_DESC> {
     state.add((size_t)v.GSPassthrough);
     state.add((size_t)v.SampleCount);
     state.add((size_t)v.ShaderDepthBias);
+    state.add((size_t)v.SOTopology);
     state.add((size_t)v.NumColorAttachments);
     for (unsigned i = 0; i < v.NumColorAttachments; i++) {
       state.add(v.ColorAttachmentFormats[i]);
@@ -140,7 +144,8 @@ template <> struct equal_to<MTL_GRAPHICS_PIPELINE_DESC> {
            (x.IndexBufferFormat == y.IndexBufferFormat) &&
            (x.SampleMask == y.SampleMask) &&
            (x.GSPassthrough == y.GSPassthrough) &&
-           (x.ShaderDepthBias == y.ShaderDepthBias);
+           (x.ShaderDepthBias == y.ShaderDepthBias) &&
+           (x.SOTopology == y.SOTopology);
   }
 };
 } // namespace std

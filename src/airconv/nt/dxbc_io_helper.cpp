@@ -410,52 +410,138 @@ IOHelper::PopulateDefaultCoverageMask(llvm::Value *StructRet, uint32_t to_elemen
   return ir.CreateInsertValue(StructRet, air.getInt(sample_mask), {to_element});
 }
 
+std::pair<llvm::Value *, llvm::Value *>
+IOHelper::InitializeStreamOutputVertex(
+    const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *vertex_so, uint32_t stream_output_draw_arg_index
+) {
+  auto draw_type = types._dxmt_stream_output_draw;
+  auto draw = ir.CreateLoad(
+      draw_type, ir.CreateBitCast(
+                     function->getArg(stream_output_draw_arg_index),
+                     draw_type->getPointerTo((uint32_t)air::AddressSpace::constant)
+                 )
+  );
+  // The draw starts at vertex 0 and has no indices, so this counts the output
+  // vertices of an instance
+  auto output_vertex = ir.CreateSub(io.vertex_id_with_base, io.base_vertex_id);
+
+  auto const one = ir.getInt32(1);
+  auto const two = ir.getInt32(2);
+  auto const three = ir.getInt32(3);
+  // Triangle n of a strip is {n, n + 1 + (n & 1), n + 2 - (n & 1)}, as the
+  // geometry pipeline assembles it
+  auto strip_triangle_element = [&]() -> llvm::Value * {
+    auto triangle = ir.CreateUDiv(output_vertex, three);
+    auto corner = ir.CreateSub(output_vertex, ir.CreateMul(triangle, three));
+    auto odd = ir.CreateAnd(triangle, one);
+    auto offset = ir.CreateSelect(
+        ir.CreateICmpEQ(corner, ir.getInt32(0)), ir.getInt32(0),
+        ir.CreateSelect(ir.CreateICmpEQ(corner, one), ir.CreateAdd(one, odd), ir.CreateSub(two, odd))
+    );
+    return ir.CreateAdd(triangle, offset);
+  };
+  auto line = ir.CreateLShr(output_vertex, one);
+  auto line_end = ir.CreateAnd(output_vertex, one);
+
+  // The element of the draw at this output vertex; the vertices that only
+  // tell the adjacency are not streamed out
+  llvm::Value *element = output_vertex;
+  switch (vertex_so->topology) {
+  case SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP:
+    element = ir.CreateAdd(line, line_end);
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP:
+    element = strip_triangle_element();
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_LINE_LIST_ADJ:
+    element = ir.CreateAdd(ir.CreateMul(line, ir.getInt32(4)), ir.CreateAdd(one, line_end));
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ:
+    element = ir.CreateAdd(line, ir.CreateAdd(one, line_end));
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_LIST_ADJ:
+    element = ir.CreateMul(output_vertex, two);
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP_ADJ:
+    element = ir.CreateMul(strip_triangle_element(), two);
+    break;
+  default:
+    break;
+  }
+
+  // The draw tells whether it has indices and their size, so one function
+  // serves the indexed and the other draws of a pipeline. An index past the
+  // end of the index buffer is 0.
+  {
+    auto index_buffer = ir.CreateExtractValue(draw, {1});
+    auto index_size = ir.CreateExtractValue(draw, {6});
+    auto current = ir.GetInsertBlock();
+    auto load_index = llvm::BasicBlock::Create(ir.getContext(), "stream_output_index", current->getParent());
+    auto load_index16 = llvm::BasicBlock::Create(ir.getContext(), "stream_output_index16", current->getParent());
+    auto load_index32 = llvm::BasicBlock::Create(ir.getContext(), "stream_output_index32", current->getParent());
+    auto continuation = llvm::BasicBlock::Create(ir.getContext(), "stream_output_vertex", current->getParent());
+    auto no_indices = ir.CreateICmpEQ(index_size, ir.getInt32(0));
+    auto without_index = ir.CreateSelect(no_indices, element, ir.getInt32(0));
+    ir.CreateCondBr(
+        ir.CreateAnd(ir.CreateNot(no_indices), ir.CreateICmpULT(element, ir.CreateExtractValue(draw, {5}))),
+        load_index, continuation
+    );
+    ir.SetInsertPoint(load_index);
+    ir.CreateCondBr(ir.CreateICmpEQ(index_size, two), load_index16, load_index32);
+    auto load = [&](llvm::Type *index_type) -> llvm::Value * {
+      auto indices = ir.CreateBitCast(index_buffer, index_type->getPointerTo((uint32_t)air::AddressSpace::device));
+      return ir.CreateZExt(ir.CreateLoad(index_type, ir.CreateGEP(index_type, indices, {element})), types._int);
+    };
+    ir.SetInsertPoint(load_index16);
+    auto index16 = load(ir.getInt16Ty());
+    ir.CreateBr(continuation);
+    ir.SetInsertPoint(load_index32);
+    auto index32 = load(ir.getInt32Ty());
+    ir.CreateBr(continuation);
+    ir.SetInsertPoint(continuation);
+    auto vertex_id = ir.CreatePHI(types._int, 3);
+    vertex_id->addIncoming(without_index, current);
+    vertex_id->addIncoming(index16, load_index16);
+    vertex_id->addIncoming(index32, load_index32);
+    io.vertex_id = vertex_id;
+  }
+  io.base_vertex_id = ir.CreateExtractValue(draw, {4});
+  io.vertex_id_with_base = ir.CreateAdd(io.vertex_id, io.base_vertex_id);
+
+  // The instances follow each other in the output
+  auto position = ir.CreateAdd(
+      ir.CreateMul(ir.CreateZExt(io.instance_id, types._long), ir.CreateZExt(ir.CreateExtractValue(draw, {3}), types._long)),
+      ir.CreateZExt(output_vertex, types._long)
+  );
+  return {draw, position};
+}
+
 llvm::Value *
 IOHelper::PopulateOutputStreamOutput(
     llvm::Value *StructRet, const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *vertex_so,
-    const std::vector<uint8_t> &output_masks, uint32_t base_vertex_arg_index, uint32_t vertex_id_arg_index,
-    uint32_t stream_output_table_arg_index
+    const std::vector<uint8_t> &output_masks, llvm::Value *stream_output_draw, llvm::Value *output_vertex
 ) {
-  auto base_vertex = function->getArg(base_vertex_arg_index);
-  auto vertex_id = function->getArg(vertex_id_arg_index);
-  auto so_entries_type = types._dxmt_stream_output_buffer_entry;
-  auto so_entries = ir.CreateBitCast(
-      function->getArg(stream_output_table_arg_index),
-      so_entries_type->getPointerTo((uint32_t)air::AddressSpace::constant)
-  );
-  auto slot0_entry = ir.CreateLoad(so_entries_type, ir.CreateConstInBoundsGEP1_32(so_entries_type, so_entries, 0));
-  auto slot0 = ir.CreateExtractValue(slot0_entry, {0});
-  auto slot0_size = ir.CreateExtractValue(slot0_entry, {2});
-  auto adjusted_vertex_id = ir.CreateSub(vertex_id, base_vertex);
   auto output_regs = ir.CreateBitOrPointerCast(io.output.ptr_int4, llvm::PointerType::get(types._int, 0));
 
-  uint32_t stride = vertex_so->strides[0];
-  uint32_t vertex_size = stride;
-  for (unsigned i = 0; i < vertex_so->num_elements; i++) {
-    auto &element = vertex_so->elements[i];
-    if (element.reg_id != 0xffffffff)
-      vertex_size = std::max(vertex_size, element.offset + 4);
-  }
-  if (!vertex_size)
-    return StructRet;
-
-  // A vertex is written only when all of it fits into the bound buffer, which
-  // has a size of 0 without one
-  auto vertex_offset = ir.CreateMul(ir.CreateZExt(adjusted_vertex_id, types._long), ir.getInt64(stride));
-  auto fits = ir.CreateICmpULE(
-      ir.CreateAdd(vertex_offset, ir.getInt64(vertex_size)), ir.CreateZExt(slot0_size, types._long)
-  );
+  // The vertex limit covers whole primitives that fit into every slot the
+  // declaration writes, and is 0 when one of them has no buffer
+  auto fits = ir.CreateICmpULT(output_vertex, ir.CreateZExt(ir.CreateExtractValue(stream_output_draw, {2}), types._long));
   auto current = ir.GetInsertBlock();
   auto write_vertex = llvm::BasicBlock::Create(ir.getContext(), "stream_output_write", current->getParent());
   auto continuation = llvm::BasicBlock::Create(ir.getContext(), "stream_output_done", current->getParent());
   ir.CreateCondBr(fits, write_vertex, continuation);
   ir.SetInsertPoint(write_vertex);
 
-  auto vertex_ptr = ir.CreateGEP(types._int, slot0, {ir.CreateLShr(vertex_offset, 2)});
+  llvm::Value *vertex_ptr[4] = {};
   for (unsigned i = 0; i < vertex_so->num_elements; i++) {
     auto &element = vertex_so->elements[i];
-    if (element.reg_id == 0xffffffff)
+    if (element.reg_id == 0xffffffff || element.output_slot >= 4)
       continue;
+    if (!vertex_ptr[element.output_slot]) {
+      auto slot = ir.CreateExtractValue(stream_output_draw, {0, element.output_slot});
+      auto vertex_offset = ir.CreateMul(output_vertex, ir.getInt64(vertex_so->strides[element.output_slot] / 4));
+      vertex_ptr[element.output_slot] = ir.CreateGEP(types._int, slot, {vertex_offset});
+    }
     // The declaration's signature can come from other bytecode than the
     // vertex shader; a component the vertex shader does not write is 0
     llvm::Value *value = ir.getInt32(0);
@@ -464,7 +550,7 @@ IOHelper::PopulateOutputStreamOutput(
       auto ptr = ir.CreateConstGEP1_32(types._int, output_regs, (unsigned)(element.reg_id * 4 + element.component));
       value = ir.CreateLoad(types._int, ptr);
     }
-    auto target_ptr = ir.CreateConstGEP1_32(types._int, vertex_ptr, element.offset / 4);
+    auto target_ptr = ir.CreateConstGEP1_32(types._int, vertex_ptr[element.output_slot], element.offset / 4);
     ir.CreateStore(value, target_ptr, true);
   }
 

@@ -60,6 +60,18 @@ EmulatedCommandContext::EmulatedCommandContext(WMT::Device device, InternalComma
     ts_marshal_pipeline.rasterization_enabled = false;
     ts_draw_arguments_marshal = device.newRenderPipelineState(ts_marshal_pipeline, error);
   }
+
+  for (auto [name, pipeline] :
+       {std::pair{"so_draw_prologue", &so_draw_prologue}, std::pair{"so_draw_auto", &so_draw_auto}}) {
+    auto function = library.newFunction(name);
+    WMTRenderPipelineInfo info;
+    WMT::InitializeRenderPipelineInfo(info);
+    info.vertex_function = function;
+    info.rasterization_enabled = false;
+    *pipeline = device.newRenderPipelineState(info, error);
+    if (!*pipeline)
+      ERR("Failed to create the pipeline of ", name, ": ", error.description().getUTF8String());
+  }
 }
 
 void

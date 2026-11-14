@@ -2,11 +2,16 @@
 
 #include "Metal.hpp"
 #include "rc/util_rc_ptr.hpp"
+#include "thread.hpp"
 #include "wsi_platform.hpp"
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace dxmt {
@@ -338,9 +343,220 @@ private:
   WMT::Device device_;
 };
 
+constexpr unsigned kStreamOutputStreams = 4;
+
+/* The two counters D3D11 keeps per stream: the primitives stream output
+   wrote, and those it would have written into buffers that are large enough */
+struct StreamOutputCounters {
+  uint64_t written = 0;
+  uint64_t needed = 0;
+};
+
+using StreamOutputCounterSet = std::array<StreamOutputCounters, kStreamOutputStreams>;
+
+/**
+ * The counters between a Begin() and an End(). The encoding thread counts the
+ * draws whose output it knows and passes its totals to begin() and end(). The
+ * draws whose output only the GPU can count write their counters to a buffer
+ * of their command buffer, at the positions begin() and end() bracket, and
+ * issue() adds them once that command buffer has completed.
+ *
+ * A command list of a deferred context keeps the query and begins and ends
+ * it again each time it executes, so every begin() starts from nothing, and
+ * the thread that asks for the range (End() on the immediate context,
+ * ExecuteCommandList) calls expect() first: the value is that of the last
+ * range asked for, never of one before it.
+ */
+class StreamOutputQuery {
+public:
+  void
+  incRef() {
+    refcount_.fetch_add(1u, std::memory_order_acquire);
+  }
+  void
+  decRef() {
+    if (refcount_.fetch_sub(1u, std::memory_order_release) == 1u)
+      delete this;
+  }
+
+  /* One more end() has to come before the query has its value */
+  void
+  expect() {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    expected_++;
+  }
+
+  /* False when the query was already open, and only starts over */
+  bool
+  begin(uint64_t seq_id, const StreamOutputCounterSet &counted, uint32_t gpu_draw) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    bool opened = !open_;
+    open_ = true;
+    counted_begin_ = counted;
+    counted_ = {};
+    gpu_counted_ = {};
+    seq_id_begin_ = seq_id;
+    gpu_draw_begin_ = gpu_draw;
+    seq_id_end_ = ~0uLL;
+    seq_id_issued_ = 0;
+    return opened;
+  }
+
+  /* False when the query was not open: nothing ends */
+  bool
+  end(uint64_t seq_id, const StreamOutputCounterSet &counted, uint32_t gpu_draw) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    if (expected_)
+      expected_--;
+    if (!open_)
+      return false;
+    open_ = false;
+    for (unsigned stream = 0; stream < kStreamOutputStreams; stream++) {
+      counted_[stream].written = counted[stream].written - counted_begin_[stream].written;
+      counted_[stream].needed = counted[stream].needed - counted_begin_[stream].needed;
+    }
+    gpu_draw_end_ = gpu_draw;
+    seq_id_end_ = seq_id;
+    return true;
+  }
+
+  /* Whether the range ended in the command buffer seq_id or an earlier one */
+  bool
+  endedBy(uint64_t seq_id) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    return seq_id_end_ <= seq_id;
+  }
+
+  /* Nobody will end the query or ask for its value any more */
+  void
+  abandon() {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    abandoned_ = true;
+  }
+
+  /* Closes a query that was abandoned while open, which nothing else ends.
+     False for every other query. */
+  bool
+  closeAbandoned() {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    if (!abandoned_ || !open_)
+      return false;
+    open_ = false;
+    return true;
+  }
+
+  /* gpu_draws has the counters of each stream for each of the num_gpu_draws
+     draws of the command buffer seq_id that the GPU counted. Command buffers
+     complete in order, and one gives its counters once. */
+  void
+  issue(uint64_t seq_id, const StreamOutputCounters *gpu_draws, uint32_t num_gpu_draws) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    if (seq_id < seq_id_begin_ || seq_id > seq_id_end_ || seq_id <= seq_id_issued_)
+      return;
+    uint32_t first = seq_id == seq_id_begin_ ? gpu_draw_begin_ : 0;
+    uint32_t last = seq_id == seq_id_end_ ? gpu_draw_end_ : num_gpu_draws;
+    for (uint32_t draw = first; draw < last && draw < num_gpu_draws; draw++) {
+      for (unsigned stream = 0; stream < kStreamOutputStreams; stream++) {
+        gpu_counted_[stream].written += gpu_draws[draw * kStreamOutputStreams + stream].written;
+        gpu_counted_[stream].needed += gpu_draws[draw * kStreamOutputStreams + stream].needed;
+      }
+    }
+    seq_id_issued_ = seq_id;
+  }
+
+  bool
+  getValue(StreamOutputCounterSet &value) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    if (expected_ || seq_id_end_ > seq_id_issued_)
+      return false;
+    for (unsigned stream = 0; stream < kStreamOutputStreams; stream++) {
+      value[stream].written = counted_[stream].written + gpu_counted_[stream].written;
+      value[stream].needed = counted_[stream].needed + gpu_counted_[stream].needed;
+    }
+    return true;
+  }
+
+private:
+  dxmt::mutex mutex_;
+  StreamOutputCounterSet counted_begin_{};
+  StreamOutputCounterSet counted_{};
+  StreamOutputCounterSet gpu_counted_{};
+  uint64_t seq_id_begin_ = ~0uLL;
+  uint32_t gpu_draw_begin_ = 0;
+  uint32_t gpu_draw_end_ = 0;
+  uint64_t seq_id_end_ = ~0uLL;
+  uint64_t seq_id_issued_ = 0;
+  uint32_t expected_ = 0;
+  bool open_ = false;
+  bool abandoned_ = false;
+  std::atomic<uint32_t> refcount_ = {0u};
+};
+
+constexpr uint32_t kStreamOutputReadbackDraws = 256;
+
+/* A buffer the GPU writes the counters of kStreamOutputReadbackDraws draws to */
+struct StreamOutputReadbackBlock {
+  WMTBufferInfo info;
+  WMT::Reference<WMT::Buffer> buffer;
+
+  StreamOutputReadbackBlock(WMT::Device device) {
+    info.options = WMTResourceHazardTrackingModeUntracked;
+    info.memory.set(nullptr);
+    info.length = kStreamOutputReadbackDraws * kStreamOutputStreams * sizeof(StreamOutputCounters);
+#ifdef __i386__
+    info.memory.set(wsi::aligned_malloc(info.length, DXMT_PAGE_SIZE));
+#endif
+    buffer = device.newBuffer(info);
+  }
+  ~StreamOutputReadbackBlock() {
+#ifdef __i386__
+    wsi::aligned_free(info.memory.get());
+#endif
+  }
+  StreamOutputReadbackBlock(const StreamOutputReadbackBlock &) = delete;
+  StreamOutputReadbackBlock(StreamOutputReadbackBlock &&) = delete;
+};
+
+/* Lives until its command buffer has completed, then gives the queries that
+   were open in it the counters of that command buffer */
+class StreamOutputReadback {
+public:
+  StreamOutputReadback(
+      uint64_t seq_id, std::vector<std::unique_ptr<StreamOutputReadbackBlock>> &&blocks, uint32_t num_gpu_draws,
+      const std::vector<Rc<StreamOutputQuery>> &queries
+  ) :
+      seq_id_(seq_id),
+      num_gpu_draws_(num_gpu_draws),
+      blocks_(std::move(blocks)),
+      queries_(queries) {}
+
+  ~StreamOutputReadback() {
+    std::vector<StreamOutputCounters> gpu_draws(size_t(num_gpu_draws_) * kStreamOutputStreams);
+    for (uint32_t draw = 0; draw < num_gpu_draws_; draw += kStreamOutputReadbackDraws) {
+      auto count = std::min(kStreamOutputReadbackDraws, num_gpu_draws_ - draw);
+      memcpy(
+          &gpu_draws[size_t(draw) * kStreamOutputStreams], blocks_[draw / kStreamOutputReadbackDraws]->info.memory.get(),
+          size_t(count) * kStreamOutputStreams * sizeof(StreamOutputCounters)
+      );
+    }
+    for (auto &query : queries_)
+      query->issue(seq_id_, gpu_draws.data(), num_gpu_draws_);
+  }
+
+  StreamOutputReadback(const StreamOutputReadback &) = delete;
+  StreamOutputReadback(StreamOutputReadback &&) = delete;
+
+private:
+  uint64_t seq_id_;
+  uint32_t num_gpu_draws_;
+  std::vector<std::unique_ptr<StreamOutputReadbackBlock>> blocks_;
+  std::vector<Rc<StreamOutputQuery>> queries_;
+};
+
 struct QueryReadbacks {
   std::unique_ptr<VisibilityResultReadback> visibility;
   std::unique_ptr<TimestampReadback> timestamp;
+  std::unique_ptr<StreamOutputReadback> stream_output;
 };
 
 } // namespace dxmt

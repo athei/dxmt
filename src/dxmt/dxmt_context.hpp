@@ -69,6 +69,11 @@ constexpr unsigned kSRVBindings = 128;
 constexpr unsigned kUAVBindings = 64;
 constexpr unsigned kVertexBufferSlots = 32;
 constexpr unsigned kStreamOutputSlots = 4;
+/* The offset of SOSetTargets that continues at the filled size */
+constexpr unsigned kStreamOutputAppend = 0xffffffff;
+/* The arguments of DrawInstancedIndirect and DrawIndexedInstancedIndirect */
+constexpr size_t kDrawArgumentsSize = 4 * sizeof(uint32_t);
+constexpr size_t kDrawIndexedArgumentsSize = 5 * sizeof(uint32_t);
 
 struct VertexBufferBinding {
   Rc<Buffer> buffer;
@@ -102,19 +107,106 @@ struct UnorderedAccessViewBinding {
 
 struct StreamOutputBinding {
   Rc<Buffer> buffer;
-  uint64_t offset;
-  Rc<Buffer> counter;
 };
 
-/* An entry of the stream output table the emulated stream output reads;
-   airconv's dxmt_stream_output_buffer_entry has the same layout */
-struct SO_BUFFER_ENTRY {
-  uint64_t buffer_handle;
-  uint64_t counter_handle;
-  /* bytes from buffer_handle to the end of the buffer: the shader writes no
-     vertex that does not fit */
-  uint32_t size;
+/* What the vertex function of the emulated stream output reads for a draw;
+   airconv's dxmt_stream_output_draw has the same layout */
+struct SO_DRAW_RECORD {
+  /* where each output slot takes the first vertex of the draw */
+  uint64_t buffer_handle[kStreamOutputSlots];
+  /* the first index of an indexed draw */
+  uint64_t index_buffer;
+  /* the output vertices of the draw, counted over its instances, that are
+     written: those of the primitives that fit into every slot */
+  uint32_t vertex_limit;
+  /* output vertices of an instance */
+  uint32_t vertex_count;
+  /* StartVertexLocation, or BaseVertexLocation of an indexed draw */
+  int32_t base_vertex;
+  /* indices that can be read at index_buffer */
+  uint32_t index_limit;
+  /* 0 without indices, or 2 or 4 */
+  uint32_t index_size;
   uint32_t reserved;
+};
+
+/* What a draw passes to the vertex function so_draw_prologue (dxmt_command.metal),
+   which has the same struct: the draw's output cannot be counted here, so
+   the function counts it, advances the filled sizes and writes the
+   SO_DRAW_RECORD and the arguments of the draw */
+struct SO_DRAW_TASK {
+  struct {
+    /* the 32-bit filled size of the target, and where the function writes
+       the one after the draw: another place, so that a function that runs
+       twice advances it once */
+    uint64_t filled;
+    uint64_t filled_out;
+    uint64_t buffer;
+    uint32_t size;
+    /* 0 for a slot the declaration does not write */
+    uint32_t stride;
+  } slots[kStreamOutputSlots];
+  /* the arguments of an indirect draw, or 0 for the ones below */
+  uint64_t arguments;
+  uint64_t record_out;
+  uint64_t draw_arguments_out;
+  /* a StreamOutputCounters, or 0 */
+  uint64_t counters_out;
+  uint64_t index_buffer;
+  uint32_t index_buffer_size;
+  uint32_t index_size;
+  uint32_t count;
+  uint32_t instance_count;
+  uint32_t start;
+  int32_t base_vertex;
+  uint32_t start_instance;
+  uint32_t topology_lead;
+  uint32_t topology_step;
+  uint32_t vertices_per_primitive;
+  /* the declaration writes a slot that has no target */
+  uint32_t unbound;
+  uint32_t reserved;
+};
+
+/* What a DrawAuto passes to the vertex function so_draw_auto, which writes
+   the arguments of the draw from a filled size only the GPU knows */
+struct SO_DRAW_AUTO_TASK {
+  uint64_t filled;
+  uint64_t arguments_out;
+  uint32_t offset;
+  uint32_t stride;
+};
+
+/* Bytes of the encoder's argument buffer a stream output draw takes: its
+   SO_DRAW_RECORD or SO_DRAW_TASK, then the SO_DRAW_AUTO_TASK of a DrawAuto */
+constexpr size_t kStreamOutputDrawTaskOffset = 224;
+constexpr size_t kStreamOutputDrawArgumentSize = 256;
+static_assert(sizeof(SO_DRAW_TASK) <= kStreamOutputDrawTaskOffset);
+static_assert(kStreamOutputDrawTaskOffset + sizeof(SO_DRAW_AUTO_TASK) <= kStreamOutputDrawArgumentSize);
+
+/* A draw through the emulated stream output */
+struct StreamOutputDraw {
+  /* stride of each slot the declaration writes, 0 for the others */
+  uint32_t strides[kStreamOutputSlots];
+  /* The topology as numbers: the vertices it takes before its first
+     primitive, the vertices each primitive adds, and the vertices of a
+     primitive of the list that is written */
+  uint8_t topology_lead;
+  uint8_t topology_step;
+  uint8_t vertices_per_primitive;
+  /* 0 without indices, or 2 or 4 */
+  uint8_t index_size;
+  /* The list primitive the draw is encoded with */
+  WMTPrimitiveType primitive_type;
+  /* The offset of IASetIndexBuffer */
+  uint32_t index_buffer_offset;
+  /* The arguments of the D3D11 draw. An indirect draw and DrawAuto leave
+     them 0. */
+  uint32_t count;
+  uint32_t instance_count;
+  uint32_t start;
+  int32_t base_vertex;
+  uint32_t start_instance;
 };
 
 enum class EncoderType {
@@ -211,6 +303,10 @@ struct RenderEncoderData : EncoderData {
   uint64_t encoder_id_vertex;
   FenceSet fence_wait_vertex;
   FenceSet fence_update_vertex;
+  /* The waits of the fragment and the vertex stage as the accesses asked
+     for them, before endPass() simplifies them */
+  FenceSet fence_wait_strong;
+  FenceSet fence_wait_vertex_strong;
   void *allocated_argbuf_mapping;
   uint8_t dsv_planar_flags;
   uint8_t dsv_readonly_flags;
@@ -218,7 +314,8 @@ struct RenderEncoderData : EncoderData {
   bool use_visibility_result = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
-  bool use_emulated_so = 0;
+  /* pre-raster memory barriers encoded so far */
+  uint32_t pre_raster_barriers = 0;
   TileBarrierPSOKey tile_barrier_pso_key = {};
   WMT::RenderPipelineState last_pso = {};
 };
@@ -489,16 +586,22 @@ public:
 
   template <PipelineStage stage> void bindOutputTexture(unsigned slot, Rc<Texture> &&texture, uint64_t viewId);
 
-  void bindStreamOutputBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer, Rc<Buffer> &&counter) {
+  /* An offset other than kStreamOutputAppend redefines the filled size of
+     the buffer, as SOSetTargets does */
+  void
+  bindStreamOutputBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer) {
     auto &entry = so_[slot];
     entry.buffer = std::move(buffer);
-    entry.offset = offset;
-    entry.counter = std::move(counter);
+    bindStreamOutputBufferOffset(slot, offset);
   }
-  
-  void bindStreamOutputBufferOffset(unsigned slot, unsigned offset) {
+
+  void
+  bindStreamOutputBufferOffset(unsigned slot, unsigned offset) {
     auto &entry = so_[slot];
-    entry.offset = offset;
+    if (!entry.buffer.ptr() || offset == kStreamOutputAppend)
+      return;
+    entry.buffer->streamOutput.filled = offset;
+    entry.buffer->streamOutput.on_gpu = false;
   }
 
   void
@@ -550,7 +653,30 @@ public:
       const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments,
       uint64_t argument_buffer_offset
   );
-  template <PipelineKind kind> void encodeStreamOutputBuffers(uint64_t offset);
+  /* Records that the draws after it write the bound stream output targets.
+     Needed once per render encoder and after each change of the targets. */
+  void trackStreamOutputTargets();
+
+  /* The draws of the emulated stream output. argument_offset is where the
+     draw has kStreamOutputDrawArgumentSize bytes of the encoder's argument
+     buffer. The indirect draw takes the arguments of DrawInstancedIndirect,
+     or of DrawIndexedInstancedIndirect when the draw has indices. */
+  void drawStreamOutput(const StreamOutputDraw &draw, uint64_t argument_offset);
+  void drawStreamOutputIndirect(
+      const StreamOutputDraw &draw, uint64_t argument_offset, Rc<Buffer> const &arguments, uint32_t arguments_offset
+  );
+  void drawStreamOutputAuto(const StreamOutputDraw &draw, uint64_t argument_offset);
+
+  /* DrawAuto without stream output: the vertices from the offset of vertex
+     buffer 0 to its filled size. False when only the GPU knows the count;
+     drawAutoArguments() then makes the arguments of an indirect draw. */
+  bool drawAutoVertexCount(uint32_t &vertex_count);
+  /* argument_offset is where the draw has sizeof(SO_DRAW_AUTO_TASK) bytes of
+     the encoder's argument buffer */
+  AllocatedTempBufferSlice drawAutoArguments(uint64_t argument_offset);
+
+  void beginStreamOutputQuery(Rc<StreamOutputQuery> &&query);
+  void endStreamOutputQuery(Rc<StreamOutputQuery> &&query);
 
   void retainAllocation(Allocation* allocation);
 
@@ -894,6 +1020,26 @@ private:
   std::array<UnorderedAccessViewBinding, kUAVBindings> cs_uav_;
 
   std::array<StreamOutputBinding, kStreamOutputSlots> so_;
+
+  /* gpu_arguments is the address of the draw's arguments when only the GPU
+     has them, or 0 */
+  void encodeStreamOutputDraw(const StreamOutputDraw &draw, uint64_t argument_offset, uint64_t gpu_arguments);
+  /* The address of the filled size of a buffer whose filled size is on the GPU */
+  uint64_t streamOutputFilledAddress(Buffer *buffer);
+  /* Encodes the draw of one point that runs a function of
+     dxmt_command.metal with the task at argument_offset, and the barrier
+     that lets the commands after it read what the function wrote */
+  void encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset);
+  void encodePreRasterBarrier();
+
+  /* The counters of the draws whose output the encoding thread knows */
+  StreamOutputCounterSet so_counted_{};
+  std::vector<Rc<StreamOutputQuery>> so_pending_queries_;
+  unsigned so_active_queries_ = 0;
+  /* The draws of the command buffer whose counters the GPU writes, and the
+     buffers it writes them to */
+  uint32_t so_gpu_draws_ = 0;
+  std::vector<std::unique_ptr<StreamOutputReadbackBlock>> so_readback_blocks_;
 
   WMT::Reference<WMT::SamplerState> dummy_sampler_;
   WMTSamplerInfo dummy_sampler_info_;

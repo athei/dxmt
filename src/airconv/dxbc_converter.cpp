@@ -16,6 +16,7 @@
 #include <bit>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "dxil_converter.hpp"
@@ -641,17 +642,19 @@ llvm::Error convert_dxbc_vertex_shader(
       });
     }
   }
+  // Set once the function exists, before the prologue runs
+  llvm::Value *so_draw = nullptr;
+  llvm::Value *so_output_vertex = nullptr;
+  uint32_t so_draw_idx = ~0u;
   if (vertex_so) {
-    auto bv = func_signature.DefineInput(air::InputBaseVertex{});
-    auto vid = func_signature.DefineInput(air::InputVertexID{});
-    auto so_table = func_signature.DefineInput(air::ArgumentBindingBuffer{
+    so_draw_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
       .location_index = SM50_BINDING_INDEX_STREAM_OUTPUT0,
       .array_size = 0,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
       .type = air::MSLUint{},
-      .arg_name = "stream_outputs",
+      .arg_name = "stream_output_draw",
       .raster_order_group = {}
     });
     std::vector<uint8_t> output_masks(max_output_register);
@@ -659,8 +662,8 @@ llvm::Error convert_dxbc_vertex_shader(
       if (out.reg() < max_output_register)
         output_masks[out.reg()] |= out.mask() & 0xf;
     }
-    epilogue.Add([=](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
-      return io.PopulateOutputStreamOutput(value, vertex_so, output_masks, bv, vid, so_table);
+    epilogue.Add([=, &so_draw, &so_output_vertex](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
+      return io.PopulateOutputStreamOutput(value, vertex_so, output_masks, so_draw, so_output_vertex);
     });
   }
 
@@ -759,6 +762,9 @@ llvm::Error convert_dxbc_vertex_shader(
   };
 
   IOHelper io(air, function, types, resource_map);
+
+  if (vertex_so)
+    std::tie(so_draw, so_output_vertex) = io.InitializeStreamOutputVertex(vertex_so, so_draw_idx);
 
   if (auto err = prologue.Run(io)) {
     return err;

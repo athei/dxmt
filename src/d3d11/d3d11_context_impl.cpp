@@ -113,6 +113,46 @@ to_metal_primitive_type(D3D11_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType& primiti
   return true;
 }
 
+/* How the emulated stream output expands the topology to a list: the
+   SM50_STREAM_OUTPUT_TOPOLOGY of its vertex function, and in draw the same
+   as numbers and the list primitive its draws are encoded with, which has
+   the topology class of the pipeline (to_metal_primitive_topology). False
+   for patches, which stream output takes only from tessellation. */
+inline bool
+to_stream_output_topology(D3D11_PRIMITIVE_TOPOLOGY topo, uint8_t &topology, StreamOutputDraw &draw) {
+  auto set = [&](SM50_STREAM_OUTPUT_TOPOLOGY function, uint8_t lead, uint8_t step, uint8_t vertices,
+                 WMTPrimitiveType primitive) {
+    topology = function;
+    draw.topology_lead = lead;
+    draw.topology_step = step;
+    draw.vertices_per_primitive = vertices;
+    draw.primitive_type = primitive;
+    return true;
+  };
+  switch (topo) {
+  case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LIST, 0, 1, 1, WMTPrimitiveTypePoint);
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LIST, 0, 2, 2, WMTPrimitiveTypeLine);
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP, 1, 1, 2, WMTPrimitiveTypeLine);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LIST, 0, 3, 3, WMTPrimitiveTypeTriangle);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP, 2, 1, 3, WMTPrimitiveTypeTriangle);
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_LIST_ADJ, 0, 4, 2, WMTPrimitiveTypePoint);
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ, 3, 1, 2, WMTPrimitiveTypePoint);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_LIST_ADJ, 0, 6, 3, WMTPrimitiveTypePoint);
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ:
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP_ADJ, 4, 2, 3, WMTPrimitiveTypePoint);
+  default:
+    return false;
+  }
+}
+
 inline WMTPrimitiveTopologyClass
 to_metal_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY topo) {
   switch (topo) {
@@ -1503,6 +1543,8 @@ public:
     if (status == DrawCallStatus::Tessellation) {
       return TessellationDraw(ControlPointCount, VertexCount, 1, StartVertexLocation, 0);
     }
+    if (so_draw_valid_)
+      return DrawStreamOutput(false, VertexCount, 1, StartVertexLocation, 0, 0);
     EmitOP([Primitive, StartVertexLocation, VertexCount](ArgumentEncodingContext& enc) {
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
@@ -1536,6 +1578,8 @@ public:
     if (status == DrawCallStatus::Tessellation) {
       return TessellationDrawIndexed(ControlPointCount, IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0);
     };
+    if (so_draw_valid_)
+      return DrawStreamOutput(true, IndexCount, 1, StartIndexLocation, BaseVertexLocation, 0);
     auto IndexType =
         state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
     auto IndexBufferOffset =
@@ -1581,6 +1625,11 @@ public:
           ControlPointCount, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation
       );
     }
+    if (so_draw_valid_) {
+      return DrawStreamOutput(
+          false, VertexCountPerInstance, InstanceCount, StartVertexLocation, 0, StartInstanceLocation
+      );
+    }
     EmitOP([Primitive, StartVertexLocation, VertexCountPerInstance, InstanceCount,
           StartInstanceLocation](ArgumentEncodingContext &enc) {
       enc.bumpVisibilityResultOffset();
@@ -1623,6 +1672,11 @@ public:
           StartInstanceLocation
       );
     }
+    if (so_draw_valid_) {
+      return DrawStreamOutput(
+          true, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation
+      );
+    }
     auto IndexType =
         state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
     auto IndexBufferOffset =
@@ -1648,12 +1702,15 @@ public:
 
   void
   TessellationDraw(
-      UINT NumControlPoint, UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation,
-      UINT StartInstanceLocation
+      UINT NumControlPoint, UINT VertexCount, UINT InstanceCount, UINT StartVertexLocation,
+      UINT StartInstanceLocation, bool Auto = false
   ) {
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
     EmitOP([=](ArgumentEncodingContext &enc) {
+      uint32_t VertexCountPerInstance = VertexCount;
+      if (Auto && !DrawAutoVertexCount(enc, VertexCountPerInstance))
+        return;
       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
       draw_argument->StartVertex = StartVertexLocation;
       draw_argument->VertexCount = VertexCountPerInstance;
@@ -1731,12 +1788,15 @@ public:
 
   void
   GeometryDraw(
-      UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation,
-      UINT StartInstanceLocation
+      UINT VertexCount, UINT InstanceCount, UINT StartVertexLocation,
+      UINT StartInstanceLocation, bool Auto = false
   ) {
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
     EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
+      uint32_t VertexCountPerInstance = VertexCount;
+      if (Auto && !DrawAutoVertexCount(enc, VertexCountPerInstance))
+        return;
       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
       draw_argument->StartVertex = StartVertexLocation;
       draw_argument->VertexCount = VertexCountPerInstance;
@@ -1818,6 +1878,8 @@ public:
     if (status == DrawCallStatus::Tessellation) {
       return TessellationDrawIndexedIndirect(ControlPointCount ,pBufferForArgs, AlignedByteOffsetForArgs);
     }
+    if (so_draw_valid_)
+      return DrawStreamOutputIndirect(true, pBufferForArgs, AlignedByteOffsetForArgs);
     auto IndexType =
         state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
@@ -1860,6 +1922,8 @@ public:
     if (status == DrawCallStatus::Tessellation) {
       return TessellationDrawIndirect(ControlPointCount, pBufferForArgs, AlignedByteOffsetForArgs);
     }
+    if (so_draw_valid_)
+      return DrawStreamOutputIndirect(false, pBufferForArgs, AlignedByteOffsetForArgs);
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
       EmitOP([Primitive, ArgBuffer = bindable->buffer(), AlignedByteOffsetForArgs](ArgumentEncodingContext &enc) {
         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
@@ -2025,7 +2089,54 @@ public:
   DrawAuto() override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    EmitST([](ArgumentEncodingContext &enc) { enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedDrawAuto); });
+    WMTPrimitiveType Primitive;
+    uint32_t ControlPointCount;
+    if (!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
+      return;
+    DrawCallStatus status = PreDraw<false>();
+    if (status == DrawCallStatus::Invalid)
+      return;
+    if (status == DrawCallStatus::Geometry)
+      return GeometryDraw(0, 1, 0, 0, true);
+    if (status == DrawCallStatus::Tessellation)
+      return TessellationDraw(ControlPointCount, 0, 1, 0, 0, true);
+    if (so_draw_valid_)
+      return DrawStreamOutputAuto();
+    auto argument_offset = PreAllocateArgumentBuffer(sizeof(SO_DRAW_AUTO_TASK), 32);
+    EmitOP([Primitive, argument_offset](ArgumentEncodingContext &enc) {
+      enc.bumpVisibilityResultOffset();
+      uint32_t vertex_count;
+      if (enc.drawAutoVertexCount(vertex_count)) {
+        if (!vertex_count)
+          return;
+        enc.resolveRenderPassBarrier();
+        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw>();
+        cmd.type = WMTRenderCommandDraw;
+        cmd.primitive_type = Primitive;
+        cmd.vertex_start = 0;
+        cmd.vertex_count = vertex_count;
+        cmd.base_instance = 0;
+        cmd.instance_count = 1;
+        return;
+      }
+      auto arguments = enc.drawAutoArguments(argument_offset);
+      auto &cmd = enc.encodeRenderCommand<wmtcmd_render_draw_indirect>();
+      cmd.type = WMTRenderCommandDrawIndirect;
+      cmd.primitive_type = Primitive;
+      cmd.indirect_args_buffer = arguments.gpu_buffer;
+      cmd.indirect_args_offset = arguments.offset;
+    });
+  }
+
+  /* The vertex count of a DrawAuto through the geometry or tessellation
+     pipeline, whose draws take their arguments from the encoding thread */
+  static bool
+  DrawAutoVertexCount(ArgumentEncodingContext &enc, uint32_t &vertex_count) {
+    if (enc.drawAutoVertexCount(vertex_count))
+      return vertex_count != 0;
+    enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedDrawAuto);
+    ERR_ONCE("DrawAuto through a geometry shader or tessellation is not drawn when only the GPU knows the filled size");
+    return false;
   }
 
   void
@@ -2456,12 +2567,12 @@ public:
         auto &entry = state_.StreamOutput.Targets.bind(slot, {pBuffer}, replaced);
         if (!replaced) {
           auto offset = pOffsets ? pOffsets[slot] : 0;
-          if (offset != entry.Offset) {
+          entry.Offset = offset;
+          // Every call sets the filled size of the target again, also to the
+          // offset it already had, unless it asks to append
+          if (offset != kStreamOutputAppend) {
             state_.StreamOutput.Targets.set_dirty(slot);
-            entry.Offset = offset;
-            EmitST([=, buffer = pBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
-              enc.bindStreamOutputBufferOffset(slot, offset);
-            });
+            EmitST([=](ArgumentEncodingContext &enc) { enc.bindStreamOutputBufferOffset(slot, offset); });
           }
           continue;
         }
@@ -2477,12 +2588,12 @@ public:
          * - RTV is questionable: we don't support buffer-backed RTV at the moment
          */
         EmitST([=, buffer = pBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
-          enc.bindStreamOutputBuffer(slot, entry.Offset, forward_rc(buffer), {});
+          enc.bindStreamOutputBuffer(slot, entry.Offset, forward_rc(buffer));
         });
       } else {
         state_.StreamOutput.Targets.unbind(slot);
         EmitST([=](ArgumentEncodingContext &enc) mutable {
-          enc.bindStreamOutputBuffer(slot, 0, {}, {});
+          enc.bindStreamOutputBuffer(slot, 0, {});
         });
       }
     }
@@ -4494,14 +4605,103 @@ public:
   bool promote_flush = false;
   /* UpdateSubresource maps default buffers, which applications cannot */
   bool mapping_for_update_ = false;
+  /* While so_draw_valid_, the ordinary pipeline streams out from the vertex
+     shader, and so_draw_ has what its draws take from the declaration and
+     the topology */
+  bool so_draw_valid_ = false;
+  StreamOutputDraw so_draw_ = {};
 
-  /* Stream output queries report nothing written, which is only right
-     without stream output targets */
+  bool
+  InitializeStreamOutputDraw(IMTLD3D11StreamOutputLayout *pLayout, uint8_t &Topology) {
+    so_draw_ = {};
+    if (!to_stream_output_topology(state_.InputAssembler.Topology, Topology, so_draw_))
+      return false;
+    MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *elements;
+    uint32_t strides[kStreamOutputSlots];
+    uint32_t num_elements = pLayout->GetStreamOutputElements(&elements, strides);
+    for (unsigned i = 0; i < num_elements; i++) {
+      if (elements[i].OutputSlot < kStreamOutputSlots)
+        so_draw_.strides[elements[i].OutputSlot] = strides[elements[i].OutputSlot];
+    }
+    return true;
+  }
+
+  StreamOutputDraw
+  GetStreamOutputDraw(bool Indexed) {
+    StreamOutputDraw draw = so_draw_;
+    if (Indexed) {
+      draw.index_size = state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? 4 : 2;
+      draw.index_buffer_offset = state_.InputAssembler.IndexBufferOffset;
+    }
+    return draw;
+  }
+
   void
-  WarnStreamOutputQuery() {
-    static std::atomic<bool> warned = false;
-    if (state_.StreamOutput.Targets.any_bound() && !warned.exchange(true))
-      WARN("Stream output queries do not count primitives, they report none written while targets are bound");
+  DrawStreamOutput(bool Indexed, UINT Count, UINT InstanceCount, UINT Start, INT BaseVertex, UINT StartInstance) {
+    auto draw = GetStreamOutputDraw(Indexed);
+    draw.count = Count;
+    draw.instance_count = InstanceCount;
+    draw.start = Start;
+    draw.base_vertex = BaseVertex;
+    draw.start_instance = StartInstance;
+    auto argument_offset = PreAllocateArgumentBuffer(kStreamOutputDrawArgumentSize, 32);
+    EmitOP([draw, argument_offset](ArgumentEncodingContext &enc) {
+      enc.bumpVisibilityResultOffset();
+      enc.drawStreamOutput(draw, argument_offset);
+    });
+  }
+
+  void
+  DrawStreamOutputIndirect(bool Indexed, ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs) {
+    auto bindable = GetResourceCommon(pBufferForArgs);
+    if (!bindable)
+      return;
+    auto draw = GetStreamOutputDraw(Indexed);
+    auto argument_offset = PreAllocateArgumentBuffer(kStreamOutputDrawArgumentSize, 32);
+    EmitOP([draw, argument_offset, ArgBuffer = bindable->buffer(),
+            AlignedByteOffsetForArgs](ArgumentEncodingContext &enc) {
+      enc.bumpVisibilityResultOffset();
+      enc.drawStreamOutputIndirect(draw, argument_offset, ArgBuffer, AlignedByteOffsetForArgs);
+    });
+  }
+
+  void
+  DrawStreamOutputAuto() {
+    auto draw = GetStreamOutputDraw(false);
+    auto argument_offset = PreAllocateArgumentBuffer(kStreamOutputDrawArgumentSize, 32);
+    EmitOP([draw, argument_offset](ArgumentEncodingContext &enc) {
+      enc.bumpVisibilityResultOffset();
+      enc.drawStreamOutputAuto(draw, argument_offset);
+    });
+  }
+
+  /* A deferred context runs these when its command list executes, so the
+     commands keep their queries */
+  void
+  BeginStreamOutputQuery(MTLD3D11StreamOutputQuery *pQuery) {
+    Rc<StreamOutputQuery> abandoned;
+    auto query = pQuery->Begin(abandoned);
+    EmitST([query = std::move(query), abandoned = std::move(abandoned)](ArgumentEncodingContext &enc) {
+      if (abandoned.ptr())
+        enc.endStreamOutputQuery(Rc(abandoned));
+      enc.beginStreamOutputQuery(Rc(query));
+    });
+  }
+
+  /* Returns the query that ends, if one does. Expect is for the context
+     whose commands run once, now; a command list expects its queries each
+     time it executes. */
+  Rc<StreamOutputQuery>
+  EndStreamOutputQuery(MTLD3D11StreamOutputQuery *pQuery, bool Expect) {
+    auto query = pQuery->End();
+    if (!query.ptr())
+      return {};
+    // Before the command, which may run at once
+    if (Expect)
+      query->expect();
+    EmitST([query](ArgumentEncodingContext &enc) { enc.endStreamOutputQuery(Rc(query)); });
+    promote_flush = true;
+    return query;
   }
 
   /**
@@ -4650,8 +4850,7 @@ public:
     state_.ShaderStages[PipelineStage::Geometry].Samplers.set_dirty();
     state_.ShaderStages[PipelineStage::Geometry].SRVs.set_dirty();
     state_.InputAssembler.VertexBuffers.set_dirty();
-    // Emulated stream output reads its table on every encoder, also with no
-    // target bound
+    // Each encoder that streams out has to record that it writes the targets
     state_.StreamOutput.Targets.set_dirty();
     state_.OutputMerger.UAVs.set_dirty();
     dirty_state.set(
@@ -4854,6 +5053,8 @@ public:
     } else {
       Desc.SOLayout = nullptr;
     }
+    // Set by the pipeline that streams out from the vertex shader
+    Desc.SOTopology = SM50_STREAM_OUTPUT_TOPOLOGY_LIST;
     Desc.NumColorAttachments = state_.OutputMerger.NumRTVs;
     for (unsigned i = 0; i < ARRAYSIZE(state_.OutputMerger.RTVs); i++) {
       auto &rtv = state_.OutputMerger.RTVs[i];
@@ -5100,6 +5301,14 @@ public:
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
     UpdateShaderDepthBias(pipelineDesc.ShaderDepthBias);
 
+    so_draw_valid_ = false;
+    if (pipelineDesc.SOLayout) {
+      // Patches are not streamed out without tessellation
+      if (!InitializeStreamOutputDraw(pipelineDesc.SOLayout, pipelineDesc.SOTopology))
+        return DrawCallStatus::Invalid;
+      so_draw_valid_ = true;
+    }
+
     device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
@@ -5119,8 +5328,7 @@ public:
       state_.ShaderStages[PipelineStage::Vertex].ConstantBuffers.set_dirty();
       state_.ShaderStages[PipelineStage::Vertex].SRVs.set_dirty();
       state_.ShaderStages[PipelineStage::Vertex].Samplers.set_dirty();
-      // The other pipelines do not encode the table the emulated stream
-      // output reads
+      // The other pipelines do not record that the targets are written
       state_.StreamOutput.Targets.set_dirty();
       previous_render_pipeline_state = CommandBufferState::RenderPipelineReady;
     }
@@ -5303,18 +5511,17 @@ public:
       return;
     if (!state_.StreamOutput.Targets.any_dirty())
       return;
-    // Only the ordinary pipeline reads the table without a target
-    if (cmdbuf_state != CommandBufferState::RenderPipelineReady && !state_.StreamOutput.Targets.any_bound())
+    if (!state_.StreamOutput.Targets.any_bound()) {
+      state_.StreamOutput.Targets.clear_dirty();
       return;
-
-    auto offset = PreAllocateArgumentBuffer(sizeof(SO_BUFFER_ENTRY) * kStreamOutputSlots, 32);
+    }
 
     if (cmdbuf_state == CommandBufferState::RenderPipelineReady)
-      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Ordinary>(offset); });
+      EmitST([](ArgumentEncodingContext &enc) { enc.trackStreamOutputTargets(); });
     else if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
-      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Tessellation>(offset); });
+      EmitST([](ArgumentEncodingContext &enc) { ERR("unimplemented stream output from tessellation pipeline"); });
     else if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady)
-      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Geometry>(offset); });
+      EmitST([](ArgumentEncodingContext &enc) { ERR("unimplemented stream output from geometry pipeline"); });
 
     state_.StreamOutput.Targets.clear_dirty();
   }
@@ -5361,9 +5568,11 @@ public:
       });
     }
 
+    // The targets keep the filled sizes they have: this binds them again, it
+    // is not a call of SOSetTargets
     for (const auto &[slot, entry] : state_.StreamOutput.Targets) {
-      EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.Offset](ArgumentEncodingContext &enc) mutable {
-        enc.bindStreamOutputBuffer(slot, offset, forward_rc(buffer), {});
+      EmitST([=, buffer = entry.Buffer->buffer()](ArgumentEncodingContext &enc) mutable {
+        enc.bindStreamOutputBuffer(slot, kStreamOutputAppend, forward_rc(buffer));
       });
     }
 
@@ -5757,6 +5966,7 @@ public:
     issued_visibility_query.clear();
     issued_event_query.clear();
     issued_timestamp_query.clear();
+    issued_stream_output_query.clear();
     list.reset();
     staging_allocator.free_blocks(~0uLL);
     cpu_command_allocator.free_blocks(~0uLL);
@@ -5841,6 +6051,8 @@ public:
   std::vector<std::pair<Com<MTLD3D11OcclusionQuery>, uint32_t>> issued_visibility_query;
   std::vector<Com<MTLD3D11EventQuery>> issued_event_query;
   std::vector<Com<MTLD3D11TimestampQuery>> issued_timestamp_query;
+  /* The stream output queries the list ends, each time it executes */
+  std::vector<Rc<StreamOutputQuery>> issued_stream_output_query;
 
 private:
   UINT context_flag;

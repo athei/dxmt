@@ -332,8 +332,7 @@ public:
     }
     default:
       if (IsStreamOutputQuery(desc.Query)) {
-        WarnStreamOutputQuery();
-        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Begin();
+        BeginStreamOutputQuery(static_cast<MTLD3D11StreamOutputQuery *>(pAsync));
         break;
       }
       ERR("DeferredContext: unhandled query type ", desc.Query);
@@ -384,8 +383,8 @@ public:
     }
     default:
       if (IsStreamOutputQuery(desc.Query)) {
-        WarnStreamOutputQuery();
-        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->End();
+        if (auto query = EndStreamOutputQuery(static_cast<MTLD3D11StreamOutputQuery *>(pAsync), false))
+          ctx_state.current_cmdlist->issued_stream_output_query.push_back(std::move(query));
         break;
       }
       ERR("DeferredContext: unhandled query type ", desc.Query);
@@ -437,6 +436,8 @@ public:
       current->issued_event_query.push_back(query);
     for (const auto &query : cmdlist->issued_timestamp_query)
       current->issued_timestamp_query.push_back(query);
+    for (const auto &query : cmdlist->issued_stream_output_query)
+      current->issued_stream_output_query.push_back(query);
     for (const auto &staging : cmdlist->read_staging_resources)
       current->read_staging_resources.push_back(staging);
     for (const auto &staging : cmdlist->written_staging_resources)

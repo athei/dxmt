@@ -125,33 +125,90 @@ CreateTimestampQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID
   return S_FALSE;
 }
 
-class StreamOutputQuery : public MTLD3DQueryBase<MTLD3D11StreamOutputQuery> {
+class MTLD3D11StreamOutputQueryImpl : public MTLD3DQueryBase<MTLD3D11StreamOutputQuery> {
   using MTLD3DQueryBase<MTLD3D11StreamOutputQuery>::MTLD3DQueryBase;
 
   // No data before the first End(), and none while building
   QueryState state_ = QueryState::Undefined;
 
+  Rc<StreamOutputQuery> query_;
+  StreamOutputCounterSet value_{};
+
+public:
+  ~MTLD3D11StreamOutputQueryImpl() {
+    // The encoding context still counts it as open
+    if (query_.ptr() && state_ == QueryState::Building)
+      query_->abandon();
+  }
+
+private:
   virtual UINT STDMETHODCALLTYPE
   GetDataSize() override {
     return IsPredicateQuery(desc_.Query) ? sizeof(BOOL) : sizeof(D3D11_QUERY_DATA_SO_STATISTICS);
   };
 
-  virtual void
-  Begin() override {
+  virtual Rc<StreamOutputQuery>
+  Begin(Rc<StreamOutputQuery> &abandoned) override {
+    if (state_ == QueryState::Building)
+      abandoned = std::move(query_);
     state_ = QueryState::Building;
+    query_ = new StreamOutputQuery();
+    return query_;
   };
 
-  virtual void
+  virtual Rc<StreamOutputQuery>
   End() override {
-    state_ = QueryState::Signaled;
+    if (state_ != QueryState::Building) {
+      // As a Begin() with the End() right after it
+      value_ = {};
+      state_ = QueryState::Signaled;
+      return {};
+    }
+    state_ = QueryState::Issued;
+    return query_;
   };
 
   virtual HRESULT
   GetData(void *data) override {
-    if (state_ != QueryState::Signaled)
+    if (state_ == QueryState::Undefined || state_ == QueryState::Building)
       return DXGI_ERROR_INVALID_CALL;
-    if (data)
-      memset(data, 0, GetDataSize());
+    // Asked each time: a command list that executes again issues the query
+    // again
+    if (state_ == QueryState::Issued && !query_->getValue(value_))
+      return S_FALSE;
+    if (!data)
+      return S_OK;
+    // SO_STATISTICS is the query of stream 0, SO_OVERFLOW_PREDICATE the one
+    // of all streams
+    unsigned stream = 0;
+    switch (desc_.Query) {
+    case D3D11_QUERY_SO_STATISTICS_STREAM1:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM1:
+      stream = 1;
+      break;
+    case D3D11_QUERY_SO_STATISTICS_STREAM2:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM2:
+      stream = 2;
+      break;
+    case D3D11_QUERY_SO_STATISTICS_STREAM3:
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3:
+      stream = 3;
+      break;
+    default:
+      break;
+    }
+    if (!IsPredicateQuery(desc_.Query)) {
+      auto statistics = (D3D11_QUERY_DATA_SO_STATISTICS *)data;
+      statistics->NumPrimitivesWritten = value_[stream].written;
+      statistics->PrimitivesStorageNeeded = value_[stream].needed;
+      return S_OK;
+    }
+    bool overflow = value_[stream].needed > value_[stream].written;
+    if (desc_.Query == D3D11_QUERY_SO_OVERFLOW_PREDICATE) {
+      for (auto &counters : value_)
+        overflow = overflow || counters.needed > counters.written;
+    }
+    *(BOOL *)data = overflow;
     return S_OK;
   }
 };
@@ -159,7 +216,7 @@ class StreamOutputQuery : public MTLD3DQueryBase<MTLD3D11StreamOutputQuery> {
 HRESULT
 CreateStreamOutputQuery(MTLD3D11Device *pDevice, const D3D11_QUERY_DESC1 *pDesc, ID3D11Query1 **ppQuery) {
   if (ppQuery) {
-    *ppQuery = ref(new StreamOutputQuery(pDevice, pDesc));
+    *ppQuery = ref(new MTLD3D11StreamOutputQueryImpl(pDevice, pDesc));
     return S_OK;
   }
   return S_FALSE;

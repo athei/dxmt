@@ -306,11 +306,8 @@ HRESULT ExtractMTLStreamOutputElements(
       WARN("CreateEmulatedVertexStreamOutputShader: only stream 0 supported");
       return E_INVALIDARG;
     }
-    // FIXME: support more than 1 output slot
-    if (entry.OutputSlot != 0) {
-      WARN("CreateEmulatedVertexStreamOutputShader: only slot 0 supported");
+    if (entry.OutputSlot >= D3D11_SO_BUFFER_SLOT_COUNT)
       return E_INVALIDARG;
-    }
     if (entry.SemanticName == nullptr) {
       offsets[entry.OutputSlot] += sizeof(float) * entry.ComponentCount;
       continue;

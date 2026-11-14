@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace dxmt::dxbc {
@@ -74,12 +75,20 @@ public:
   llvm::Value *
   PopulateDefaultCoverageMask(llvm::Value *StructRet, uint32_t AtElement, uint32_t SampleMask);
 
+  /* Takes the vertex and instance ids of the vertex shader from the output
+     vertex the stream output draw runs for: the draw is expanded to a list,
+     and an indexed one loads its index here. Returns the draw's
+     dxmt_stream_output_draw and the position of the output vertex among all
+     the draw writes, a 64-bit value */
+  std::pair<llvm::Value *, llvm::Value *> InitializeStreamOutputVertex(
+      const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *VertexSO, uint32_t StreamOutputDrawArgumentIndex
+  );
+
   /* OutputMasks has the components the vertex shader writes of each of its
      output registers */
   llvm::Value *PopulateOutputStreamOutput(
       llvm::Value *StructRet, const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *VertexSO,
-      const std::vector<uint8_t> &OutputMasks, uint32_t BaseVertexArgumentIndex, uint32_t VertexIDArgumentIndex,
-      uint32_t StreamOutputTableArgumentIndex
+      const std::vector<uint8_t> &OutputMasks, llvm::Value *StreamOutputDraw, llvm::Value *OutputVertex
   );
 
   void PopulateMeshOutputRenderTargetArrayIndex(uint32_t FromRegister, uint32_t Mask, llvm::Value *PrimitiveId);

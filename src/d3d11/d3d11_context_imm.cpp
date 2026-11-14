@@ -361,8 +361,7 @@ public:
     }
     default:
       if (IsStreamOutputQuery(desc.Query)) {
-        WarnStreamOutputQuery();
-        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->Begin();
+        BeginStreamOutputQuery(static_cast<MTLD3D11StreamOutputQuery *>(pAsync));
         break;
       }
       ERR("Unknown query type ", desc.Query);
@@ -423,8 +422,7 @@ public:
     }
     default:
       if (IsStreamOutputQuery(desc.Query)) {
-        WarnStreamOutputQuery();
-        static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->End();
+        EndStreamOutputQuery(static_cast<MTLD3D11StreamOutputQuery *>(pAsync), true);
         break;
       }
       ERR("Unknown query type ", desc.Query);
@@ -503,8 +501,10 @@ public:
       return S_OK;
     }
     default:
-      if (IsStreamOutputQuery(desc.Query))
-        return static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->GetData(pData);
+      if (IsStreamOutputQuery(desc.Query)) {
+        hr = static_cast<MTLD3D11StreamOutputQuery *>(pAsync)->GetData(pData);
+        break;
+      }
       ERR("Unknown query type ", desc.Query);
       return E_FAIL;
     }
@@ -566,6 +566,11 @@ public:
 
     for (const auto &query : cmdlist->issued_timestamp_query) {
       End(query.ptr());
+    }
+
+    // Before the commands of the list end them
+    for (const auto &query : cmdlist->issued_stream_output_query) {
+      query->expect();
     }
 
     for (const auto &staging : cmdlist->read_staging_resources) {

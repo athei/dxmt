@@ -224,6 +224,19 @@ struct SM50_STREAM_OUTPUT_ELEMENT {
   uint32_t offset;
 };
 
+/* How the emulated stream output expands a draw to a list of primitives: the
+   draw runs once per output vertex, and the vertex function takes the element
+   of the draw that the topology puts there */
+enum SM50_STREAM_OUTPUT_TOPOLOGY {
+  SM50_STREAM_OUTPUT_TOPOLOGY_LIST = 0,
+  SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP = 1,
+  SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP = 2,
+  SM50_STREAM_OUTPUT_TOPOLOGY_LINE_LIST_ADJ = 3,
+  SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ = 4,
+  SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_LIST_ADJ = 5,
+  SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP_ADJ = 6,
+};
+
 struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -231,6 +244,8 @@ struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA {
   uint32_t num_elements;
   uint32_t strides[4];
   struct SM50_STREAM_OUTPUT_ELEMENT *elements;
+  /* enum SM50_STREAM_OUTPUT_TOPOLOGY */
+  uint32_t topology;
 };
 
 enum SM50_SHADER_METAL_VERSION {

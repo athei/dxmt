@@ -493,6 +493,157 @@ struct DXMTGSDispatchMarshal {
   };
 }
 
+// The structs of the stream output functions have the layout of SO_DRAW_TASK,
+// SO_DRAW_RECORD and SO_DRAW_AUTO_TASK in dxmt_context.hpp
+
+struct DXMTStreamOutputSlot {
+  device uint* filled;
+  device uint* filled_out;
+  ulong buffer;
+  uint size;
+  uint stride;
+};
+
+struct DXMTStreamOutputRecord {
+  ulong buffer_handle[4];
+  ulong index_buffer;
+  uint vertex_limit;
+  uint vertex_count;
+  int base_vertex;
+  uint index_limit;
+  uint index_size;
+  uint reserved;
+};
+
+struct DXMTStreamOutputCounters {
+  ulong written;
+  ulong needed;
+};
+
+struct DXMTStreamOutputTask {
+  DXMTStreamOutputSlot slots[4];
+  device uint* arguments;
+  device DXMTStreamOutputRecord* record_out;
+  device uint* draw_arguments_out;
+  device DXMTStreamOutputCounters* counters_out;
+  ulong index_buffer;
+  uint index_buffer_size;
+  uint index_size;
+  uint count;
+  uint instance_count;
+  uint start;
+  int base_vertex;
+  uint start_instance;
+  uint topology_lead;
+  uint topology_step;
+  uint vertices_per_primitive;
+  uint unbound;
+  uint reserved;
+};
+
+// Counts what a stream output draw writes when the encoding thread cannot:
+// the arguments of the draw or a filled size are only known here. Writes the
+// filled sizes after the draw, what the draw's vertex function reads, the
+// arguments of the draw and the counters of stream 0. It reads nothing it
+// writes, so it may run more than once.
+[[vertex]] void so_draw_prologue(
+    constant DXMTStreamOutputTask& task [[buffer(kCustomBufferArgumentIndex0)]]
+) {
+  uint count = task.count;
+  uint instance_count = task.instance_count;
+  uint start = task.start;
+  int base_vertex = task.base_vertex;
+  uint start_instance = task.start_instance;
+  if (task.arguments) {
+    count = task.arguments[0];
+    instance_count = task.arguments[1];
+    start = task.arguments[2];
+    if (task.index_size) {
+      base_vertex = (int)task.arguments[3];
+      start_instance = task.arguments[4];
+    } else {
+      start_instance = task.arguments[3];
+    }
+  }
+
+  ulong primitives = count > task.topology_lead ? (count - task.topology_lead) / task.topology_step : 0;
+  ulong vertex_count = primitives * task.vertices_per_primitive;
+  if (vertex_count > 0xfffffffful) {
+    primitives = 0;
+    vertex_count = 0;
+  }
+  ulong needed = primitives * instance_count;
+  ulong written = task.unbound ? 0 : needed;
+  for (uint slot = 0; slot < 4; slot++) {
+    if (!task.slots[slot].filled)
+      continue;
+    uint filled = *task.slots[slot].filled;
+    ulong available = task.slots[slot].size > filled ? task.slots[slot].size - filled : 0;
+    ulong room = available / ((ulong)task.slots[slot].stride * task.vertices_per_primitive);
+    if (room < written)
+      written = room;
+  }
+
+  device DXMTStreamOutputRecord& record = *task.record_out;
+  for (uint slot = 0; slot < 4; slot++) {
+    if (!task.slots[slot].filled) {
+      record.buffer_handle[slot] = 0;
+      continue;
+    }
+    uint filled = *task.slots[slot].filled;
+    record.buffer_handle[slot] = task.slots[slot].buffer + filled;
+    *task.slots[slot].filled_out = filled + (uint)(written * task.vertices_per_primitive * task.slots[slot].stride);
+  }
+  ulong vertex_limit = written * task.vertices_per_primitive;
+  record.vertex_limit = vertex_limit > 0xffffffff ? 0xffffffff : (uint)vertex_limit;
+  record.vertex_count = (uint)vertex_count;
+  record.base_vertex = task.index_size ? base_vertex : (int)start;
+  record.index_size = task.index_size;
+  record.reserved = 0;
+  ulong first_index = (ulong)start * task.index_size;
+  if (task.index_size && first_index < task.index_buffer_size) {
+    record.index_buffer = task.index_buffer + first_index;
+    record.index_limit = (uint)((task.index_buffer_size - first_index) / task.index_size);
+  } else {
+    record.index_buffer = 0;
+    record.index_limit = 0;
+  }
+
+  // MTLDrawPrimitivesIndirectArguments; nothing to draw when nothing is written
+  task.draw_arguments_out[0] = written ? (uint)vertex_count : 0;
+  task.draw_arguments_out[1] = instance_count;
+  task.draw_arguments_out[2] = 0;
+  task.draw_arguments_out[3] = start_instance;
+
+  if (task.counters_out) {
+    task.counters_out[0].written = written;
+    task.counters_out[0].needed = needed;
+    for (uint stream = 1; stream < 4; stream++) {
+      task.counters_out[stream].written = 0;
+      task.counters_out[stream].needed = 0;
+    }
+  }
+}
+
+struct DXMTStreamOutputAutoTask {
+  device uint* filled;
+  device uint* arguments_out;
+  uint offset;
+  uint stride;
+};
+
+// Writes the arguments of a DrawAuto from a filled size the encoding thread
+// does not know
+[[vertex]] void so_draw_auto(
+    constant DXMTStreamOutputAutoTask& task [[buffer(kCustomBufferArgumentIndex0)]]
+) {
+  uint filled = *task.filled;
+  task.arguments_out[0] = filled > task.offset ? (filled - task.offset) / task.stride : 0;
+  task.arguments_out[1] = 1;
+  task.arguments_out[2] = 0;
+  task.arguments_out[3] = 0;
+}
+
 struct depth_stencil_out {
   float depth [[depth(any)]];
   uint stencil [[stencil]]; 

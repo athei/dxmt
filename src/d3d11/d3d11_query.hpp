@@ -225,14 +225,14 @@ HRESULT CreateTimestampQuery(MTLD3D11Device *pDevice,
                               ID3D11Query1 **ppQuery);
 
 /**
- * Stream output statistics and overflow predicates. DXMT does not count what
- * stream output writes, so they report no primitives and no overflow, which
- * is the right answer while no stream output targets are bound.
+ * Stream output statistics and overflow predicates
  */
 class MTLD3D11StreamOutputQuery : public MTLD3D11Query {
 public:
-  virtual void Begin() = 0;
-  virtual void End() = 0;
+  /* The query to begin; abandoned gets the one of a Begin() that had no End() */
+  virtual Rc<StreamOutputQuery> Begin(Rc<StreamOutputQuery> &abandoned) = 0;
+  /* The query to end, or nothing after an End() without a Begin() */
+  virtual Rc<StreamOutputQuery> End() = 0;
   virtual HRESULT GetData(void *data) = 0;
 };
 

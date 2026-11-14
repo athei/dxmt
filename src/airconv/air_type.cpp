@@ -60,15 +60,19 @@ AirType::AirType(LLVMContext &context) : context(context) {
     "dxmt_vertex_buffer_entry"
   );
   
-  _dxmt_stream_output_buffer_entry = StructType::create(
+  _dxmt_stream_output_draw = StructType::create(
     context,
     {
-      _int->getPointerTo((uint32_t)AddressSpace::device),
-      _int->getPointerTo((uint32_t)AddressSpace::device),
-      _int, // size
+      ArrayType::get(_int->getPointerTo((uint32_t)AddressSpace::device), 4), // output slots
+      _byte->getPointerTo((uint32_t)AddressSpace::device), // index buffer
+      _int, // vertex limit
+      _int, // vertex count
+      _int, // base vertex
+      _int, // index limit
+      _int, // index size
       _int, // reserved
     },
-    "dxmt_stream_output_buffer_entry"
+    "dxmt_stream_output_draw"
   );
 
   _dxmt_draw_arguments = StructType::create(

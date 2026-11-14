@@ -319,13 +319,14 @@ template <>
 std::unique_ptr<CompiledShader>
 CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                     ShaderVariantVertexStreamOutput variant) {
-  // Salt of the variants that check each vertex against the size of its
-  // target and stream out 0 for outputs the vertex shader does not write, so
-  // that the shader cache serves none compiled without these checks
-  static constexpr char kStreamOutputChecks[] = "stream output size check, unwritten outputs";
+  // Salt of the variants that take their draw from a dxmt_stream_output_draw,
+  // so that the shader cache serves none compiled for another layout of what
+  // the function reads
+  static constexpr char kStreamOutputDraw[] = "stream output draw of 4 slots, vertex limit, indices";
   Sha1HashState h;
-  h.update(kStreamOutputChecks);
+  h.update(kStreamOutputDraw);
   h.update(getGlobalShaderFlag());
+  h.update(variant.topology);
   h.update(((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)->Digest());
   if (variant.input_layout_handle)
     h.update(variant.input_layout_handle->sha1());
@@ -337,6 +338,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data_so.type = SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT;
     data_so.next = common;
     data_so.num_output_slots = 0;
+    data_so.topology = variant.topology;
     data_so.num_elements =
         ((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)
             ->GetStreamOutputElements(

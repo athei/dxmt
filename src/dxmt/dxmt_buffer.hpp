@@ -213,6 +213,25 @@ public:
     return viewDescriptors_[view.index].format;
   }
 
+  /* What stream output keeps for a buffer it writes. Only the encoding
+     thread reads and writes it. */
+  struct StreamOutputState {
+    /* The BufferFilledSize of D3D11 (functional spec 14.4), unless on_gpu */
+    uint32_t filled = 0;
+    /* A draw whose output only the GPU can count wrote the buffer: the
+       filled size is the 32-bit value at cell_index of the two 64-bit
+       places of cell. Each such draw reads one place and writes the other. */
+    bool on_gpu = false;
+    uint8_t cell_index = 0;
+    Rc<Buffer> cell;
+    /* The end of what stream output wrote in the render encoder
+       written_encoder since that encoder's pre-raster barrier written_barrier */
+    uint64_t written_encoder = 0;
+    uint32_t written_barrier = 0;
+    uint32_t written_end = 0;
+  };
+  StreamOutputState streamOutput;
+
 private:
   void prepareAllocationViews(BufferAllocation *allocation);
 

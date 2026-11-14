@@ -122,49 +122,324 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
   }
 }
 
-template <>
 void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Ordinary>(uint64_t offset) {
+ArgumentEncodingContext::trackStreamOutputTargets() {
+  for (auto &state : so_) {
+    if (!state.buffer.ptr())
+      continue;
+    access<PipelineStage::Vertex>(state.buffer, 0, state.buffer->length(), ResourceAccess::Write);
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(state.buffer.ptr(), false, true);
+  }
+}
 
-  SO_BUFFER_ENTRY *entries = getMappedArgumentBuffer<SO_BUFFER_ENTRY>(offset);
+void
+ArgumentEncodingContext::encodePreRasterBarrier() {
+  auto &cmd = encodeRenderCommand<wmtcmd_render_memory_barrier>();
+  cmd.type = WMTRenderCommandMemoryBarrier;
+  cmd.scope = WMTBarrierScopeBuffers | WMTBarrierScopeTextures;
+  cmd.stages_before = WMTRenderStagePreRaster;
+  cmd.stages_after = WMTRenderStagePreRaster;
+  currentRenderEncoder()->pre_raster_barriers++;
+}
 
+void
+ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset) {
+  auto encoder = currentRenderEncoder();
+  auto &set_pso = encodeRenderCommand<wmtcmd_render_setpso>();
+  set_pso.type = WMTRenderCommandSetPSO;
+  set_pso.pso = pso;
+  auto &set_task = encodeRenderCommand<wmtcmd_render_setbuffer>();
+  set_task.type = WMTRenderCommandSetVertexBuffer;
+  set_task.buffer = getFinalArgumentBuffer();
+  set_task.offset = getFinalArgumentBufferOffset(argument_offset);
+  set_task.index = kCustomBufferArgumentIndex0;
+  auto &run = encodeRenderCommand<wmtcmd_render_draw>();
+  run.type = WMTRenderCommandDraw;
+  run.primitive_type = WMTPrimitiveTypePoint;
+  run.vertex_start = 0;
+  run.vertex_count = 1;
+  run.base_instance = 0;
+  run.instance_count = 1;
+  encodePreRasterBarrier();
+  if (encoder->last_pso) {
+    auto &restore_pso = encodeRenderCommand<wmtcmd_render_setpso>();
+    restore_pso.type = WMTRenderCommandSetPSO;
+    restore_pso.pso = encoder->last_pso;
+  }
+}
+
+uint64_t
+ArgumentEncodingContext::streamOutputFilledAddress(Buffer *buffer) {
+  auto &state = buffer->streamOutput;
+  if (!state.on_gpu) {
+    // A new allocation for the value: the GPU can still read and write the
+    // one of an earlier filled size
+    if (!state.cell.ptr())
+      state.cell = new Buffer(2 * sizeof(uint64_t), device_);
+    state.cell->rename(state.cell->allocate({}));
+    state.cell->current()->updateContents(0, &state.filled, sizeof(state.filled));
+    state.cell_index = 0;
+    state.on_gpu = true;
+  }
+  auto cell = state.cell->current();
+  retainAllocation(cell);
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(state.cell.ptr(), true, true);
+  return cell->gpuAddress() + state.cell_index * sizeof(uint64_t);
+}
+
+void
+ArgumentEncodingContext::drawStreamOutput(const StreamOutputDraw &draw, uint64_t argument_offset) {
+  encodeStreamOutputDraw(draw, argument_offset, 0);
+}
+
+void
+ArgumentEncodingContext::drawStreamOutputIndirect(
+    const StreamOutputDraw &draw, uint64_t argument_offset, Rc<Buffer> const &arguments, uint32_t arguments_offset
+) {
+  auto [allocation, suballocation_offset] = access<PipelineStage::Vertex>(
+      arguments, arguments_offset, kDrawIndexedArgumentsSize, ResourceAccess::Read
+  );
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(arguments.ptr());
+  // The marker that the arguments are not known here: the address cannot be 0
+  encodeStreamOutputDraw(draw, argument_offset, allocation->gpuAddress() + suballocation_offset + arguments_offset);
+}
+
+bool
+ArgumentEncodingContext::drawAutoVertexCount(uint32_t &vertex_count) {
+  auto &source = vbuf_[0];
+  vertex_count = 0;
+  if (!source.buffer.ptr() || !source.stride)
+    return true;
+  auto &state = source.buffer->streamOutput;
+  if (state.on_gpu)
+    return false;
+  if (state.filled > source.offset)
+    vertex_count = (state.filled - source.offset) / source.stride;
+  return true;
+}
+
+AllocatedTempBufferSlice
+ArgumentEncodingContext::drawAutoArguments(uint64_t argument_offset) {
+  auto &source = vbuf_[0];
+  auto arguments = allocateTempBuffer1(kDrawArgumentsSize, 16);
+  auto task = getMappedArgumentBuffer<SO_DRAW_AUTO_TASK>(argument_offset);
+  task->filled = streamOutputFilledAddress(source.buffer.ptr());
+  task->arguments_out = arguments.gpu_address + arguments.offset;
+  task->offset = source.offset;
+  task->stride = source.stride;
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+      arguments.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
+  );
+  // The barrier the vertex buffer read asks for has to come before the
+  // function reads the filled size
+  resolveRenderPassBarrier();
+  encodeStreamOutputFunction(emulated_cmd.streamOutputDrawAuto(), argument_offset);
+  return arguments;
+}
+
+void
+ArgumentEncodingContext::drawStreamOutputAuto(const StreamOutputDraw &draw, uint64_t argument_offset) {
+  StreamOutputDraw draw_auto = draw;
+  draw_auto.instance_count = 1;
+  draw_auto.start = 0;
+  draw_auto.base_vertex = 0;
+  draw_auto.start_instance = 0;
+  if (drawAutoVertexCount(draw_auto.count)) {
+    encodeStreamOutputDraw(draw_auto, argument_offset, 0);
+    return;
+  }
+  auto arguments = drawAutoArguments(argument_offset + kStreamOutputDrawTaskOffset);
+  encodeStreamOutputDraw(draw_auto, argument_offset, arguments.gpu_address + arguments.offset);
+}
+
+void
+ArgumentEncodingContext::encodeStreamOutputDraw(
+    const StreamOutputDraw &draw, uint64_t argument_offset, uint64_t gpu_arguments
+) {
+  auto encoder = currentRenderEncoder();
+  auto vertex_encoder_id = encoder->encoder_id_vertex;
+
+  bool on_gpu = gpu_arguments != 0;
+  bool unbound = false;
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
-    auto &state = so_[slot];
-    auto &buffer = state.buffer;
-    entries[slot] = {};
-    if (!buffer.ptr())
+    if (!draw.strides[slot])
       continue;
-    // The offset 0xffffffff appends at the filled size, which is not tracked
-    // yet, so nothing is written as if the buffer were full
-    if (state.offset == 0xffffffff)
-      setCompatibilityFlag(FeatureCompatibility::UnsupportedStreamOutputAppending);
-    if (state.offset >= buffer->length())
-      continue;
-    auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, state.offset, 0, ResourceAccess::Write);
-    entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset + state.offset;
-    entries[slot].counter_handle = 0; // TODO(stream-output): counter & buffer_filled_size
-    entries[slot].size = buffer->length() - state.offset;
-    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
-  };
-  {
-    auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
-    cmd.offset = getFinalArgumentBufferOffset(offset);
-    cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
-    cmd.type = WMTRenderCommandSetVertexBufferOffset;
+    auto buffer = so_[slot].buffer.ptr();
+    if (!buffer)
+      unbound = true;
+    else if (buffer->streamOutput.on_gpu)
+      on_gpu = true;
   }
 
-  currentRenderEncoder()->use_emulated_so = 1;
+  // The indices the vertex function loads
+  uint64_t index_buffer = 0;
+  uint64_t index_buffer_size = 0;
+  if (draw.index_size && ibuf_.ptr()) {
+    auto [allocation, suballocation_offset] =
+        access<PipelineStage::Vertex>(ibuf_, 0, ibuf_->length(), ResourceAccess::Read);
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(ibuf_.ptr());
+    if (draw.index_buffer_offset < ibuf_->length()) {
+      index_buffer = allocation->gpuAddress() + suballocation_offset + draw.index_buffer_offset;
+      index_buffer_size = ibuf_->length() - draw.index_buffer_offset;
+    }
+  }
+
+  auto bind_record = [&](WMT::Buffer buffer, uint64_t offset) {
+    auto &cmd = encodeRenderCommand<wmtcmd_render_setbuffer>();
+    cmd.type = WMTRenderCommandSetVertexBuffer;
+    cmd.buffer = buffer;
+    cmd.offset = offset;
+    cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+  };
+
+  if (on_gpu) {
+    // The function so_draw_prologue counts the output of the draw
+    auto output = allocateTempBuffer1(sizeof(SO_DRAW_RECORD) + kDrawArgumentsSize, 16);
+    auto task = getMappedArgumentBuffer<SO_DRAW_TASK>(argument_offset);
+    *task = {};
+    for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+      auto buffer = so_[slot].buffer.ptr();
+      if (!draw.strides[slot] || !buffer)
+        continue;
+      auto allocation = buffer->current();
+      task->slots[slot].filled = streamOutputFilledAddress(buffer);
+      buffer->streamOutput.cell_index ^= 1;
+      task->slots[slot].filled_out = streamOutputFilledAddress(buffer);
+      task->slots[slot].buffer = allocation->gpuAddress() + allocation->currentSuballocationOffset();
+      task->slots[slot].size = buffer->length();
+      task->slots[slot].stride = draw.strides[slot];
+    }
+    task->arguments = gpu_arguments;
+    task->record_out = output.gpu_address + output.offset;
+    task->draw_arguments_out = task->record_out + sizeof(SO_DRAW_RECORD);
+    if (so_active_queries_) {
+      auto index = so_gpu_draws_++;
+      if (index / kStreamOutputReadbackDraws >= so_readback_blocks_.size())
+        so_readback_blocks_.push_back(std::make_unique<StreamOutputReadbackBlock>(device_));
+      auto &block = so_readback_blocks_[index / kStreamOutputReadbackDraws];
+      task->counters_out = block->info.gpu_address + (index % kStreamOutputReadbackDraws) *
+                                                         kStreamOutputStreams * sizeof(StreamOutputCounters);
+      makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+          block->buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, false, true)
+      );
+    }
+    task->index_buffer = index_buffer;
+    task->index_buffer_size = std::min<uint64_t>(index_buffer_size, UINT32_MAX);
+    task->index_size = draw.index_size;
+    task->count = draw.count;
+    task->instance_count = draw.instance_count;
+    task->start = draw.start;
+    task->base_vertex = draw.base_vertex;
+    task->start_instance = draw.start_instance;
+    task->topology_lead = draw.topology_lead;
+    task->topology_step = draw.topology_step;
+    task->vertices_per_primitive = draw.vertices_per_primitive;
+    task->unbound = unbound;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+        output.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
+    );
+
+    resolveRenderPassBarrier();
+    encodeStreamOutputFunction(emulated_cmd.streamOutputDrawPrologue(), argument_offset);
+    bind_record(output.gpu_buffer, output.offset);
+    auto &cmd = encodeRenderCommand<wmtcmd_render_draw_indirect>();
+    cmd.type = WMTRenderCommandDrawIndirect;
+    cmd.primitive_type = draw.primitive_type;
+    cmd.indirect_args_buffer = output.gpu_buffer;
+    cmd.indirect_args_offset = output.offset + sizeof(SO_DRAW_RECORD);
+    return;
+  }
+
+  uint64_t primitives =
+      draw.count > draw.topology_lead ? (draw.count - draw.topology_lead) / draw.topology_step : 0;
+  uint64_t vertex_count = primitives * draw.vertices_per_primitive;
+  // What D3D11 calls the storage needed: every primitive of the draw
+  uint64_t needed = primitives * draw.instance_count;
+  uint64_t written = unbound ? 0 : needed;
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto buffer = so_[slot].buffer.ptr();
+    if (!draw.strides[slot] || !buffer)
+      continue;
+    uint64_t filled = buffer->streamOutput.filled;
+    uint64_t available = buffer->length() > filled ? buffer->length() - filled : 0;
+    written = std::min(written, available / (uint64_t(draw.strides[slot]) * draw.vertices_per_primitive));
+  }
+  so_counted_[0].needed += needed;
+  so_counted_[0].written += written;
+  // Without rasterization a draw that writes nothing does nothing
+  if (!written || vertex_count > UINT32_MAX)
+    return;
+
+  auto record = getMappedArgumentBuffer<SO_DRAW_RECORD>(argument_offset);
+  *record = {};
+  record->vertex_limit = std::min<uint64_t>(written * draw.vertices_per_primitive, UINT32_MAX);
+  record->vertex_count = vertex_count;
+  record->base_vertex = draw.index_size ? draw.base_vertex : int32_t(draw.start);
+  record->index_size = draw.index_size;
+  uint64_t first_index = uint64_t(draw.start) * draw.index_size;
+  if (draw.index_size && first_index < index_buffer_size) {
+    record->index_buffer = index_buffer + first_index;
+    record->index_limit = std::min<uint64_t>((index_buffer_size - first_index) / draw.index_size, UINT32_MAX);
+  }
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto buffer = so_[slot].buffer.ptr();
+    if (!draw.strides[slot] || !buffer)
+      continue;
+    auto &state = buffer->streamOutput;
+    auto allocation = buffer->current();
+    record->buffer_handle[slot] = allocation->gpuAddress() + allocation->currentSuballocationOffset() + state.filled;
+    // Two draws of an encoder write in any order unless a barrier is between
+    // them, which only matters where the later one writes again what the
+    // earlier one wrote
+    if (state.written_encoder == vertex_encoder_id && state.written_barrier == encoder->pre_raster_barriers &&
+        state.filled < state.written_end)
+      encoder->barrier_state.barrierPreRasterSet |= kBarrierTypeRW;
+  }
+
+  resolveRenderPassBarrier();
+
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto buffer = so_[slot].buffer.ptr();
+    if (!draw.strides[slot] || !buffer)
+      continue;
+    auto &state = buffer->streamOutput;
+    if (state.written_encoder != vertex_encoder_id || state.written_barrier != encoder->pre_raster_barriers) {
+      state.written_encoder = vertex_encoder_id;
+      state.written_barrier = encoder->pre_raster_barriers;
+      state.written_end = 0;
+    }
+    state.filled += written * draw.vertices_per_primitive * draw.strides[slot];
+    state.written_end = std::max(state.written_end, state.filled);
+  }
+
+  bind_record(getFinalArgumentBuffer(), getFinalArgumentBufferOffset(argument_offset));
+  auto &cmd = encodeRenderCommand<wmtcmd_render_draw>();
+  cmd.type = WMTRenderCommandDraw;
+  cmd.primitive_type = draw.primitive_type;
+  cmd.vertex_start = 0;
+  cmd.vertex_count = vertex_count;
+  cmd.instance_count = draw.instance_count;
+  cmd.base_instance = draw.start_instance;
 }
 
-template <>
 void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Tessellation>(uint64_t offset) {
-  ERR("unimplemented stream output from tessellation pipeline");
+ArgumentEncodingContext::beginStreamOutputQuery(Rc<StreamOutputQuery> &&query) {
+  // A command list that executes again begins the query it holds again
+  if (query->begin(seq_id_, so_counted_, so_gpu_draws_))
+    so_active_queries_++;
+  bool pending = std::any_of(so_pending_queries_.begin(), so_pending_queries_.end(), [&](auto &other) {
+    return other.ptr() == query.ptr();
+  });
+  if (!pending)
+    so_pending_queries_.push_back(std::move(query));
 }
-template <>
+
 void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Geometry>(uint64_t offset) {
-  ERR("unimplemented stream output from geometry pipeline");
+ArgumentEncodingContext::endStreamOutputQuery(Rc<StreamOutputQuery> &&query) {
+  if (!query->end(seq_id_, so_counted_, so_gpu_draws_))
+    return;
+  assert(so_active_queries_);
+  so_active_queries_--;
 }
 
 template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Vertex, PipelineKind::Ordinary>(
@@ -723,6 +998,8 @@ ArgumentEncodingContext::endPass() {
             ResourceAccess::Write
         );
 
+      render_encoder->fence_wait_vertex_strong = render_encoder->fence_wait_vertex;
+      render_encoder->fence_wait_strong = render_encoder->fence_wait;
       render_encoder->fence_wait_vertex =
           fence_locality_.collectAndSimplifyWaits(render_encoder->fence_wait_vertex, render_encoder->encoder_id_vertex);
       encoder_current->fence_wait =
@@ -835,11 +1112,7 @@ ArgumentEncodingContext::resolveRenderPassBarrier() {
     barrier_state.barrierSet = 0;
   }
   if (barrier_state.barrierPreRasterSet & ~intrapass_barrier_control_bits_) {
-    auto &cmd = encodeRenderCommand<wmtcmd_render_memory_barrier>();
-    cmd.type = WMTRenderCommandMemoryBarrier;
-    cmd.scope = WMTBarrierScopeBuffers | WMTBarrierScopeTextures;
-    cmd.stages_before = WMTRenderStagePreRaster;
-    cmd.stages_after = WMTRenderStagePreRaster;
+    encodePreRasterBarrier();
     barrier_state.barrierPreRasterSet = 0;
   }
   if (barrier_state.barrierFragmentAfterPreRasterSet & ~intrapass_barrier_control_bits_) {
@@ -905,6 +1178,23 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     );
   }
   std::erase_if(pending_queries_, [=](auto &query) -> bool { return query->queryEndAt() == seqId; });
+
+  if (!so_pending_queries_.empty()) {
+    readbacks.stream_output = std::make_unique<StreamOutputReadback>(
+        seqId, std::move(so_readback_blocks_), so_gpu_draws_, so_pending_queries_
+    );
+    // A query that was released while it was open is never ended
+    std::erase_if(so_pending_queries_, [&](auto &query) -> bool {
+      if (query->endedBy(seqId))
+        return true;
+      if (!query->closeAbandoned())
+        return false;
+      so_active_queries_--;
+      return true;
+    });
+  }
+  so_readback_blocks_.clear();
+  so_gpu_draws_ = 0;
 
   readbacks.timestamp = timestamp_state_.flush(cmdbuf);
 
@@ -974,8 +1264,6 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_VERTEX_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
       encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
-      if (data->use_emulated_so)
-        encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_STREAM_OUTPUT0);
       encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
       encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
       if (data->use_geometry || data->use_tessellation) {
@@ -1400,6 +1688,27 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       r1->stencil.store_action = r0->stencil.store_action;
 
       if ((void *)r0->cmd_tail != &r0->cmd_head) {
+        // The fences that made the latter's vertex or fragment stage wait
+        // for the former's vertex stage are gone once they are one encoder,
+        // so a barrier has to keep that order. The simplified waits may
+        // leave such a fence to another one that implies it, so this asks
+        // the waits the accesses asked for.
+        bool vertex_waits = r1->fence_wait_vertex_strong.intersectedWith(r0->fence_update_vertex);
+        bool fragment_waits = r1->fence_wait_strong.intersectedWith(r0->fence_update_vertex);
+        if (vertex_waits || fragment_waits) {
+          auto barrier = (wmtcmd_render_memory_barrier *)allocate_cpu_heap(sizeof(wmtcmd_render_memory_barrier), 16);
+          barrier->type = WMTRenderCommandMemoryBarrier;
+          barrier->scope = WMTBarrierScopeBuffers | WMTBarrierScopeTextures;
+          // stages_after are the stages of the former's commands, stages_before
+          // those of the latter's
+          barrier->stages_before = WMTRenderStages(
+              (vertex_waits ? WMTRenderStagePreRaster : 0) | (fragment_waits ? WMTRenderStageFragment : 0)
+          );
+          barrier->stages_after = WMTRenderStagePreRaster;
+          barrier->next.set(nullptr);
+          r0->cmd_tail->next.set(barrier);
+          r0->cmd_tail = (wmtcmd_base *)barrier;
+        }
         r0->cmd_tail->next.set(r1->cmd_head.next.get());
         r1->cmd_head.next.set(r0->cmd_head.next.get());
         r0->cmd_head.next.set(nullptr);
@@ -1407,7 +1716,6 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       }
       r1->use_tessellation = r0->use_tessellation || r1->use_tessellation;
       r1->use_geometry = r0->use_geometry || r1->use_geometry;
-      r1->use_emulated_so = r0->use_emulated_so || r1->use_emulated_so;
       std::move(
         r1->gs_arg_marshal_tasks.begin(),
         r1->gs_arg_marshal_tasks.end(),
@@ -1431,6 +1739,12 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
 
       // just in case
       r1->fence_wait.subtract(r0->fence_update_vertex);
+
+      r1->fence_wait_strong.merge(r0->fence_wait_strong);
+      r1->fence_wait_strong.subtract(r0->fence_update);
+      r1->fence_wait_strong.subtract(r0->fence_update_vertex);
+      r1->fence_wait_vertex_strong.merge(r0->fence_wait_vertex_strong);
+      r1->fence_wait_vertex_strong.subtract(r0->fence_update_vertex);
       /* 
       r1->fence_wait_vertex.subtract(r0->fence_update);
       does not make sense
