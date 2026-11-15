@@ -771,6 +771,128 @@ IOHelper::PopulateOutputStreamOutput(
   return StructRet;
 }
 
+GeometryStreamOutput
+IOHelper::InitializeGeometryStreamOutput(
+    const SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *data, uint32_t record_arg_index, llvm::Value *index,
+    uint32_t vertices_per_primitive
+) {
+  GeometryStreamOutput state = {};
+  state.data = data;
+  state.vertices_per_primitive = vertices_per_primitive;
+  auto record_type = types._dxmt_geometry_stream_output;
+  state.record = ir.CreateLoad(
+      record_type, ir.CreateBitCast(
+                       function->getArg(record_arg_index),
+                       record_type->getPointerTo((uint32_t)air::AddressSpace::constant)
+                   )
+  );
+  state.index = index;
+  state.strip_vertices = ir.CreateAlloca(types._int);
+  ir.CreateStore(ir.getInt32(0), state.strip_vertices);
+  state.primitives = ir.CreateAlloca(types._int);
+  ir.CreateStore(ir.getInt32(0), state.primitives);
+  if (data->pass == SM50_GEOMETRY_STREAM_OUTPUT_WRITE) {
+    auto counts = ir.CreateExtractValue(state.record, {1});
+    state.count = ir.CreateLoad(types._int, ir.CreateGEP(types._int, counts, {index}));
+    auto firsts = ir.CreateExtractValue(state.record, {2});
+    state.first = ir.CreateLoad(types._int, ir.CreateGEP(types._int, firsts, {index}));
+    state.previous = ir.CreateAlloca(llvm::ArrayType::get(types._int, 2 * std::max(data->num_elements, 1u)));
+  }
+  return state;
+}
+
+void
+IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
+  auto data = state.data;
+  auto vertices = state.vertices_per_primitive;
+  auto strip_vertices = ir.CreateLoad(types._int, state.strip_vertices);
+  ir.CreateStore(ir.CreateAdd(strip_vertices, ir.getInt32(1)), state.strip_vertices);
+  llvm::Value *complete = ir.getTrue();
+  if (vertices > 1)
+    complete = ir.CreateICmpUGE(strip_vertices, ir.getInt32(vertices - 1));
+  auto primitive = ir.CreateLoad(types._int, state.primitives);
+  ir.CreateStore(ir.CreateAdd(primitive, ir.CreateZExt(complete, types._int)), state.primitives);
+  if (data->pass != SM50_GEOMETRY_STREAM_OUTPUT_WRITE)
+    return;
+
+  auto output_regs = ir.CreateBitOrPointerCast(io.output.ptr_int4, llvm::PointerType::get(types._int, 0));
+  auto previous_type = state.previous->getType()->getNonOpaquePointerElementType();
+  auto previous_at = [&](unsigned vertex, unsigned element) {
+    return ir.CreateConstInBoundsGEP2_32(previous_type, state.previous, 0, vertex * data->num_elements + element);
+  };
+  std::vector<llvm::Value *> current(data->num_elements);
+  for (unsigned i = 0; i < data->num_elements; i++) {
+    auto &element = data->elements[i];
+    current[i] = ir.getInt32(0);
+    if (element.reg_id < io.output_element_count && element.component < 4)
+      current[i] = ir.CreateLoad(
+          types._int, ir.CreateConstGEP1_32(types._int, output_regs, element.reg_id * 4 + element.component)
+      );
+  }
+
+  // The primitive is written as a list; triangle n of a strip is
+  // {n, n + 1 + (n & 1), n + 2 - (n & 1)}, as the vertex path writes it. A
+  // pass that emits more than the count pass counted, as one with side
+  // effects can, keeps to the room the count gave it.
+  auto position = ir.CreateAdd(state.first, primitive);
+  auto limit = ir.CreateExtractValue(state.record, {3});
+  auto write = llvm::BasicBlock::Create(ir.getContext(), "stream_output_write", function);
+  auto done = llvm::BasicBlock::Create(ir.getContext(), "stream_output_done", function);
+  ir.CreateCondBr(
+      ir.CreateAnd(
+          complete, ir.CreateAnd(ir.CreateICmpULT(position, limit), ir.CreateICmpULT(primitive, state.count))
+      ),
+      write, done
+  );
+  ir.SetInsertPoint(write);
+  auto odd = ir.CreateICmpNE(ir.CreateAnd(strip_vertices, ir.getInt32(1)), ir.getInt32(0));
+  auto first_vertex = ir.CreateMul(ir.CreateZExt(position, types._long), ir.getInt64(vertices));
+  for (unsigned v = 0; v < vertices; v++) {
+    for (unsigned i = 0; i < data->num_elements; i++) {
+      auto &element = data->elements[i];
+      if (element.reg_id == 0xffffffff || element.output_slot >= 4)
+        continue;
+      llvm::Value *value = current[i];
+      if (vertices == 2 && v == 0) {
+        value = ir.CreateLoad(types._int, previous_at(1, i));
+      } else if (vertices == 3 && v == 0) {
+        value = ir.CreateLoad(types._int, previous_at(0, i));
+      } else if (vertices == 3 && v == 1) {
+        value = ir.CreateSelect(odd, current[i], ir.CreateLoad(types._int, previous_at(1, i)));
+      } else if (vertices == 3 && v == 2) {
+        value = ir.CreateSelect(odd, ir.CreateLoad(types._int, previous_at(1, i)), current[i]);
+      }
+      auto slot = ir.CreateExtractValue(state.record, {0, element.output_slot});
+      auto offset = ir.CreateAdd(
+          ir.CreateMul(ir.CreateAdd(first_vertex, ir.getInt64(v)), ir.getInt64(data->strides[element.output_slot] / 4)),
+          ir.getInt64(element.offset / 4)
+      );
+      ir.CreateStore(value, ir.CreateGEP(types._int, slot, {offset}), true);
+    }
+  }
+  ir.CreateBr(done);
+  ir.SetInsertPoint(done);
+
+  for (unsigned i = 0; i < data->num_elements && vertices > 1; i++) {
+    if (vertices == 3)
+      ir.CreateStore(ir.CreateLoad(types._int, previous_at(1, i)), previous_at(0, i));
+    ir.CreateStore(current[i], previous_at(1, i));
+  }
+}
+
+void
+IOHelper::CutGeometryStreamOutput(GeometryStreamOutput &state) {
+  ir.CreateStore(ir.getInt32(0), state.strip_vertices);
+}
+
+void
+IOHelper::FinishGeometryStreamOutput(GeometryStreamOutput &state) {
+  if (state.data->pass != SM50_GEOMETRY_STREAM_OUTPUT_COUNT)
+    return;
+  auto counts = ir.CreateExtractValue(state.record, {1});
+  ir.CreateStore(ir.CreateLoad(types._int, state.primitives), ir.CreateGEP(types._int, counts, {state.index}));
+}
+
 void
 IOHelper::PopulateMeshOutputRenderTargetArrayIndex(uint32_t from_reg, uint32_t mask, llvm::Value *primitive_id) {
   auto result = ToDesiredTypeFromIntVec4(LoadFromArrayAt(io.output.ptr_int4, air.getInt(from_reg)), types._int, mask);

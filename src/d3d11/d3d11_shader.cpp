@@ -8,6 +8,12 @@
 
 namespace dxmt {
 
+/* Salt of the geometry pipeline variants that stream out, whose code only
+   our series generates. Raise it whenever the series changes the code
+   generated for them: the shader cache is keyed on AIRCONV_VERSION, which
+   follows upstream, and would go on handing out the code compiled before. */
+static constexpr uint32_t kGeometryStreamOutput = 1;
+
 SM50_SHADER_FLAG
 getGlobalShaderFlag() {
   static SM50_SHADER_FLAG shader_flag;
@@ -331,13 +337,27 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)->Digest());
   if (variant.input_layout_handle)
     h.update(variant.input_layout_handle->sha1());
+  // Hashed only when set, so that the cached variants without it stay valid
+  if (variant.gs_passthrough != ~0u)
+    h.update(variant.gs_passthrough);
   auto variant_digest = h.final();
   std::string func_name = "vsso_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
     SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA data_so;
     SM50_SHADER_IA_INPUT_LAYOUT_DATA data_vertex_pulling;
+    SM50_SHADER_GS_PASS_THROUGH_DATA data_gs_passthrough;
     data_so.type = SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT;
     data_so.next = common;
+    // The vertex function returns the render target array and viewport
+    // indices from the registers a pass-through geometry shader takes them
+    // from
+    if (variant.gs_passthrough != ~0u) {
+      data_gs_passthrough.type = SM50_SHADER_GS_PASS_THROUGH;
+      data_gs_passthrough.DataEncoded = variant.gs_passthrough;
+      data_gs_passthrough.RasterizationDisabled = !variant.rasterized;
+      data_gs_passthrough.next = common;
+      data_so.next = &data_gs_passthrough;
+    }
     data_so.num_output_slots = 0;
     data_so.topology = variant.topology;
     data_so.rasterized = variant.rasterized;
@@ -348,9 +368,9 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
                 data_so.strides);
 
     if (variant.input_layout_handle) {
-      data_so.next = &data_vertex_pulling;
       data_vertex_pulling.type = SM50_SHADER_IA_INPUT_LAYOUT;
-      data_vertex_pulling.next = common;
+      data_vertex_pulling.next = data_so.next;
+      data_so.next = &data_vertex_pulling;
       data_vertex_pulling.slot_mask =
           variant.input_layout_handle->input_slot_mask();
       data_vertex_pulling.num_elements =
@@ -385,9 +405,17 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(variant.strip_topology);
   if (variant.input_layout_handle)
     h.update(variant.input_layout_handle->sha1());
+  if (variant.stream_output) {
+    h.update(kGeometryStreamOutput);
+    h.update(variant.stream_output_pass);
+  }
   auto variant_digest = h.final();
   std::string func_name = "vsgs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
+    SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA stream_output = {};
+    stream_output.type = SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT;
+    stream_output.next = common;
+    stream_output.pass = variant.stream_output_pass;
     SM50_SHADER_IA_INPUT_LAYOUT_DATA ia_layout;
     ia_layout.index_buffer_format = variant.index_buffer_format;
     if (variant.input_layout_handle) {
@@ -401,7 +429,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     }
 
     ia_layout.type = SM50_SHADER_IA_INPUT_LAYOUT;
-    ia_layout.next = common;
+    ia_layout.next = variant.stream_output ? (void *)&stream_output : (void *)common;
 
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA geometry;
     geometry.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
@@ -432,12 +460,28 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(getGlobalShaderFlag());
   h.update(variant.vertex_shader_handle->sha1());
   h.update(variant.strip_topology);
+  auto so_layout = (IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle;
+  if (so_layout) {
+    h.update(kGeometryStreamOutput);
+    h.update(so_layout->Digest());
+    h.update(variant.stream_output_pass);
+    h.update(variant.rasterized);
+  }
   auto variant_digest = h.final();
   std::string func_name = "gs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
+    SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA stream_output = {};
+    stream_output.type = SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT;
+    stream_output.next = common;
+    stream_output.pass = variant.stream_output_pass;
+    stream_output.rasterized = variant.rasterized;
+    if (so_layout)
+      stream_output.num_elements = so_layout->GetStreamOutputElements(
+          (MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC **)&stream_output.elements, stream_output.strides
+      );
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA geometry;
     geometry.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
-    geometry.next = common;
+    geometry.next = so_layout ? (void *)&stream_output : (void *)common;
     geometry.strip_topology = variant.strip_topology;
 
     sm50_bitcode_t compile_result = nullptr;

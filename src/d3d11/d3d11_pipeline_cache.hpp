@@ -18,9 +18,14 @@ public:
       const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
       const D3D11_INPUT_ELEMENT_DESC *pInputElementDesc, UINT NumElements, IMTLD3D11InputLayout **ppInputLayout
   ) = 0;
+  /* pGeometryShader is the shader of pShaderBytecode whose output is streamed
+     out, or null to stream out the vertex shader's; GSPassThrough is that of
+     a geometry shader of pShaderBytecode that passes its vertices through, or
+     ~0u */
   virtual HRESULT AddStreamOutputLayout(
       const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries, const D3D11_SO_DECLARATION_ENTRY *pEntries, UINT NumStrides,
-      const UINT *pStrides, UINT RasterizedStream, IMTLD3D11StreamOutputLayout **ppSOLayout
+      const UINT *pStrides, UINT RasterizedStream, Shader *pGeometryShader, uint32_t GSPassThrough,
+      IMTLD3D11StreamOutputLayout **ppSOLayout
   ) = 0;
   virtual HRESULT AddBlendState(const D3D11_BLEND_DESC1 *pBlendDesc, IMTLD3D11BlendState **ppBlendState) = 0;
   virtual void

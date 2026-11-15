@@ -40,6 +40,8 @@ struct MTL_COMPUTE_PIPELINE_DESC {
 
 struct MTL_COMPILED_GRAPHICS_PIPELINE {
   WMT::RenderPipelineState PipelineState;
+  /* Of a geometry pipeline that streams out: the pass that counts */
+  WMT::RenderPipelineState StreamOutputCountState;
 };
 
 struct MTL_COMPILED_COMPUTE_PIPELINE {

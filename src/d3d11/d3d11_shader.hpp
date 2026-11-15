@@ -150,11 +150,16 @@ struct ShaderVariantGeometryVertex {
   ManagedShader geometry_shader_handle;
   SM50_INDEX_BUFFER_FORMAT index_buffer_format;
   bool strip_topology;
+  /* the geometry shader streams out */
+  bool stream_output;
+  /* SM50_GEOMETRY_STREAM_OUTPUT_PASS, with stream_output */
+  uint32_t stream_output_pass;
   bool operator==(const this_type &rhs) const {
     return input_layout_handle == rhs.input_layout_handle &&
            geometry_shader_handle == rhs.geometry_shader_handle &&
            index_buffer_format == rhs.index_buffer_format &&
-           strip_topology == rhs.strip_topology;
+           strip_topology == rhs.strip_topology && stream_output == rhs.stream_output &&
+           stream_output_pass == rhs.stream_output_pass;
   }
 };
 
@@ -162,9 +167,16 @@ struct ShaderVariantGeometry {
   using this_type = ShaderVariantGeometry;
   ManagedShader vertex_shader_handle;
   bool strip_topology;
+  /* IMTLD3D11StreamOutputLayout of a geometry shader that streams out, or 0 */
+  uint64_t stream_output_layout_handle;
+  /* SM50_GEOMETRY_STREAM_OUTPUT_PASS */
+  uint32_t stream_output_pass;
+  bool rasterized;
   bool operator==(const this_type &rhs) const {
     return vertex_shader_handle == rhs.vertex_shader_handle &&
-           strip_topology == rhs.strip_topology;
+           strip_topology == rhs.strip_topology &&
+           stream_output_layout_handle == rhs.stream_output_layout_handle &&
+           stream_output_pass == rhs.stream_output_pass && rasterized == rhs.rasterized;
   }
 };
 
@@ -180,10 +192,13 @@ struct ShaderVariantVertexStreamOutput {
   /* SM50_STREAM_OUTPUT_TOPOLOGY */
   uint32_t topology;
   bool rasterized;
+  /* IMTLD3D11StreamOutputLayout::GSPassThrough: the outputs the vertex
+     function returns as the render target array and viewport indices */
+  uint32_t gs_passthrough;
   bool operator==(const this_type &rhs) const {
     return input_layout_handle == rhs.input_layout_handle &&
            stream_output_layout_handle == rhs.stream_output_layout_handle && topology == rhs.topology &&
-           rasterized == rhs.rasterized;
+           rasterized == rhs.rasterized && gs_passthrough == rhs.gs_passthrough;
   }
 };
 

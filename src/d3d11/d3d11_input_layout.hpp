@@ -16,6 +16,7 @@ struct MTL_SHADER_INPUT_LAYOUT_ELEMENT_DESC {
 
 namespace dxmt {
 class InputLayout;
+class Shader;
 };
 typedef dxmt::InputLayout *ManagedInputLayout;
 
@@ -42,6 +43,10 @@ DEFINE_COM_INTERFACE("fd58f76b-7c22-4605-b43c-28048c8b4a64",
       uint32_t Strides[4]) = 0;
   virtual dxmt::Sha1Digest &Digest() = 0;
   virtual UINT RasterizedStream() = 0;
+  /* MTL_GEOMETRY_SHADER_REFLECTION::GSPassThrough of the geometry shader
+     that passes its vertices through, whose declaration the vertex shader's
+     outputs are streamed out by, or ~0u */
+  virtual uint32_t GSPassThrough() = 0;
 };
 
 namespace dxmt {
@@ -79,6 +84,11 @@ struct MTL_STREAM_OUTPUT_DESC {
   uint32_t RasterizedStream;
   uint32_t Strides[4];
   std::vector<MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC> Elements;
+  /* The geometry shader whose output is streamed out, or null to stream out
+     the vertex shader's */
+  dxmt::Shader *GeometryShader;
+  /* IMTLD3D11StreamOutputLayout::GSPassThrough */
+  uint32_t GSPassThrough;
 };
 
 namespace std {
@@ -113,6 +123,8 @@ template <> struct hash<MTL_STREAM_OUTPUT_DESC> {
     state.add(v.Strides[1]);
     state.add(v.Strides[2]);
     state.add(v.Strides[3]);
+    state.add((size_t)v.GeometryShader);
+    state.add(v.GSPassThrough);
     for (auto &element : v.Elements) {
       state.add(std::hash<string_view>{}(
           {reinterpret_cast<const char *>(&element), sizeof(element)}));
@@ -126,7 +138,9 @@ template <> struct equal_to<MTL_STREAM_OUTPUT_DESC> {
                   const MTL_STREAM_OUTPUT_DESC &y) const {
     auto binsize =
         x.Elements.size() * sizeof(MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC);
-    return x.RasterizedStream == y.RasterizedStream && x.Strides[0] == y.Strides[0] && x.Strides[1] == y.Strides[1] &&
+    return x.RasterizedStream == y.RasterizedStream && x.GeometryShader == y.GeometryShader &&
+           x.GSPassThrough == y.GSPassThrough &&
+           x.Strides[0] == y.Strides[0] && x.Strides[1] == y.Strides[1] &&
            x.Strides[2] == y.Strides[2] && x.Strides[3] == y.Strides[3] && x.Elements.size() == y.Elements.size() &&
            (std::string_view({reinterpret_cast<const char *>(x.Elements.data()), binsize}) ==
             std::string_view({reinterpret_cast<const char *>(y.Elements.data()), binsize}));

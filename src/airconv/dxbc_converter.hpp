@@ -198,6 +198,11 @@ struct io_binding_map {
   llvm::Value *mesh = nullptr;
   std::function<void()> call_emit;
   std::function<void()> call_cut;
+  /* UAV stores and atomics are left out, and an atomic returns 0: the pass
+     of the geometry pipeline that only counts what its geometry shader
+     streams out, in the vertex and the geometry shader, so that they run
+     once, in the pass that writes */
+  bool skip_uav_writes = false;
   /* i1 of the vertex function of the emulated stream output: the vertex
      belongs to a primitive of an indexed strip with a cut index, which is
      neither written nor rasterized */

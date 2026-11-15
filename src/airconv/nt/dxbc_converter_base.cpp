@@ -1487,6 +1487,8 @@ void
 Converter::operator()(const InstStoreUAVTyped &store) {
   using namespace llvm::air;
 
+  if (res.skip_uav_writes)
+    return;
   auto Tex = LoadTexture(store.dst);
   if (!Tex.hasValue())
     return;
@@ -2308,6 +2310,8 @@ void
 Converter::operator()(const InstStoreRaw &store) {
   using namespace llvm::air;
 
+  if (res.skip_uav_writes)
+    return;
   auto Buf = LoadBuffer(store.dst);
   if (!Buf)
     return;
@@ -2340,6 +2344,8 @@ void
 Converter::operator()(const InstStoreStructured &store) {
   using namespace llvm::air;
 
+  if (res.skip_uav_writes)
+    return;
   auto Buf = LoadBuffer(store.dst);
   if (!Buf)
     return;
@@ -2423,6 +2429,10 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
     break;
   }
 
+  if (res.skip_uav_writes) {
+    StoreOperand(atomic.dst_original, ir.getInt32(0));
+    return;
+  }
   auto Buf = LoadBuffer(atomic.dst);
 
   if (Buf) {
@@ -2482,6 +2492,10 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
   using namespace llvm;
   using namespace llvm::air;
 
+  if (res.skip_uav_writes) {
+    StoreOperand(atomic.dst, ir.getInt32(0));
+    return;
+  }
   auto Buf = LoadBuffer(atomic.dst_resource);
 
   if (Buf) {
@@ -2542,6 +2556,10 @@ Converter::operator()(const InstAtomicImmIncrement &atomic) {
   using namespace llvm;
   using namespace llvm::air;
 
+  if (res.skip_uav_writes) {
+    StoreOperand(atomic.dst, ir.getInt32(0));
+    return;
+  }
   auto Ctr = LoadCounter(atomic.uav);
   if (!Ctr)
     return;
@@ -2554,6 +2572,10 @@ Converter::operator()(const InstAtomicImmDecrement &atomic) {
   using namespace llvm;
   using namespace llvm::air;
 
+  if (res.skip_uav_writes) {
+    StoreOperand(atomic.dst, ir.getInt32(0));
+    return;
+  }
   auto Ctr = LoadCounter(atomic.uav);
   if (!Ctr)
     return;

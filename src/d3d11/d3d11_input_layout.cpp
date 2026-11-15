@@ -165,6 +165,10 @@ public:
     return desc_.RasterizedStream;
   }
 
+  uint32_t GSPassThrough() override {
+    return desc_.GSPassThrough;
+  }
+
 private:
   MTL_STREAM_OUTPUT_DESC desc_;
   Sha1Digest sha1_;
@@ -181,7 +185,7 @@ private:
       return container->QueryInterface(riid, ppvObject);
     }
 
-    virtual ManagedShader GetManagedShader() override { return nullptr; };
+    virtual ManagedShader GetManagedShader() override { return container->desc_.GeometryShader; };
     void AddRefPrivate() override { container->AddRefPrivate(); }
     void ReleasePrivate() override { container->ReleasePrivate(); }
   };

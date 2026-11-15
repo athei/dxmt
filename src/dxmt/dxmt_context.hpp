@@ -213,21 +213,111 @@ struct SO_DRAW_TASK {
 };
 
 /* What a DrawAuto passes to the vertex function so_draw_auto, which writes
-   the arguments of the draw from a filled size only the GPU knows */
+   the arguments of the draw from a filled size only the GPU knows, and the
+   dispatch arguments of a draw through the geometry pipeline to dispatch_out
+   unless it is 0 */
 struct SO_DRAW_AUTO_TASK {
   uint64_t filled;
   uint64_t arguments_out;
   uint32_t offset;
   uint32_t stride;
+  uint64_t dispatch_out;
+  uint64_t max_object_threadgroups;
+  uint32_t vertex_count_per_warp;
+  uint32_t reserved;
 };
 
 /* Bytes of the encoder's argument buffer a stream output draw takes: its
    SO_DRAW_RECORD or SO_DRAW_TASK, then the SO_DRAW_AUTO_TASK of a DrawAuto */
 constexpr size_t kStreamOutputDrawTaskOffset = 272;
-constexpr size_t kStreamOutputDrawArgumentSize = 304;
+constexpr size_t kStreamOutputDrawArgumentSize = 320;
 static_assert(sizeof(SO_DRAW_TASK) <= kStreamOutputDrawTaskOffset);
 static_assert(sizeof(SO_DRAW_RECORD) <= kStreamOutputDrawTaskOffset);
 static_assert(kStreamOutputDrawTaskOffset + sizeof(SO_DRAW_AUTO_TASK) <= kStreamOutputDrawArgumentSize);
+
+/* What the mesh function of a geometry shader that streams out reads; airconv's
+   dxmt_geometry_stream_output has the same layout. The count pass takes its
+   own from the encoding thread, the write pass one so_geometry_prologue writes. */
+struct SO_GEOMETRY_RECORD {
+  /* where each output slot takes the first vertex of the draw */
+  uint64_t buffer_handle[kStreamOutputSlots];
+  /* the primitives each mesh threadgroup emits, in the order of the draw */
+  uint64_t counts;
+  /* the position of each one's first primitive */
+  uint64_t firsts;
+  /* the primitives that are written, those that fit into every slot */
+  uint32_t limit;
+  uint32_t reserved;
+};
+
+/* What a draw through a geometry shader that streams out passes to the vertex
+   function so_geometry_prologue (dxmt_command.metal), which has the same
+   struct */
+struct SO_GEOMETRY_TASK {
+  /* as in SO_DRAW_TASK */
+  struct {
+    uint64_t filled;
+    uint64_t filled_out;
+    uint64_t buffer;
+    uint32_t size;
+    uint32_t stride;
+  } slots[kStreamOutputSlots];
+  uint64_t counts;
+  uint64_t firsts;
+  uint64_t record_out;
+  /* a StreamOutputCounters, or 0 */
+  uint64_t counters_out;
+  /* the dispatch arguments of an indirect draw, or 0 for threadgroups */
+  uint64_t dispatch;
+  /* with dispatch: the draw arguments it was made from, and a flag the
+     function sets when they had too many object threadgroups */
+  uint64_t arguments;
+  uint64_t omitted;
+  /* the sum and the first position of each block of
+     kGeometryStreamOutputBlock counts */
+  uint64_t blocks;
+  /* the object threadgroups of the draw, and the mesh threadgroups of each */
+  uint32_t threadgroups;
+  uint32_t mesh_threadgroups;
+  uint32_t vertices_per_primitive;
+  uint32_t unbound;
+  /* the blocks the counts can take; with 1, so_geometry_prologue adds them
+     up alone */
+  uint32_t block_count;
+};
+
+/* The counts so_geometry_block_sums and so_geometry_block_firsts add up in
+   one thread each; dxmt_command.metal has the same */
+constexpr uint32_t kGeometryStreamOutputBlock = 1024;
+
+/* Bytes of the encoder's argument buffer such a draw takes: its
+   SO_GEOMETRY_TASK, then the SO_GEOMETRY_RECORD of the count pass */
+constexpr size_t kGeometryStreamOutputRecordOffset = 224;
+constexpr size_t kGeometryStreamOutputArgumentSize = 288;
+static_assert(sizeof(SO_GEOMETRY_TASK) <= kGeometryStreamOutputRecordOffset);
+static_assert(kGeometryStreamOutputRecordOffset + sizeof(SO_GEOMETRY_RECORD) <= kGeometryStreamOutputArgumentSize);
+
+/* The mesh threadgroups a direct draw through a geometry shader that streams
+   out can have: 2048 blocks, so so_geometry_prologue adds up at most 2048
+   block sums of each stream in one GPU thread. One thread adding up 16000
+   counts took 8.3 ms; at 64000 it took 26 ms and Metal reported a GPU hang.
+   Where Metal's limit lies is not known. */
+constexpr uint64_t kGeometryStreamOutputMaxMeshThreadgroups = 2048 * uint64_t(kGeometryStreamOutputBlock);
+
+/* The mesh threadgroups an indirect draw through a geometry shader that
+   streams out can have: the counts of so many fit into its scratch buffer */
+constexpr uint32_t kGeometryStreamOutputIndirectThreadgroups = 1 << 16;
+
+/* A draw through a geometry shader that streams out */
+struct GeometryStreamOutputDraw {
+  /* stride of each slot the declaration writes, 0 for the others */
+  uint32_t strides[kStreamOutputSlots];
+  /* of the output topology of the geometry shader */
+  uint32_t vertices_per_primitive;
+  /* the mesh threadgroups of an object threadgroup: the input primitives of
+     a warp times the geometry shader instances */
+  uint32_t mesh_threadgroups;
+};
 
 /* A draw through the emulated stream output */
 struct StreamOutputDraw {
@@ -715,13 +805,37 @@ public:
   );
   void drawStreamOutputAuto(const StreamOutputDraw &draw, uint64_t argument_offset);
 
+  /* A draw through a geometry shader that streams out encodes its mesh draw
+     twice: after countGeometryStreamOutput, with the pipeline of the pass that
+     counts, and after writeGeometryStreamOutput, with the pipeline set last.
+     argument_offset is where the draw has kGeometryStreamOutputArgumentSize
+     bytes of the encoder's argument buffer. A direct draw passes its object
+     threadgroups, an indirect one its dispatch arguments and the GPU address
+     of the draw arguments they are made from. False when the draw cannot
+     stream out and is not to be encoded: a direct one with more than
+     kGeometryStreamOutputMaxMeshThreadgroups, no pipeline of the count pass,
+     or no scratch buffer. */
+  bool countGeometryStreamOutput(
+      const GeometryStreamOutputDraw &draw, uint64_t argument_offset, uint64_t threadgroups,
+      AllocatedTempBufferSlice const *dispatch, uint64_t arguments
+  );
+  void writeGeometryStreamOutput(const GeometryStreamOutputDraw &draw, uint64_t argument_offset);
+
+  /* The pipeline of the pass that counts, of the geometry pipeline set last */
+  WMT::RenderPipelineState so_geometry_count_pso = {};
+
   /* DrawAuto without stream output: the vertices from the offset of vertex
      buffer 0 to its filled size. False when only the GPU knows the count;
      drawAutoArguments() then makes the arguments of an indirect draw. */
   bool drawAutoVertexCount(uint32_t &vertex_count);
   /* argument_offset is where the draw has sizeof(SO_DRAW_AUTO_TASK) bytes of
-     the encoder's argument buffer */
-  AllocatedTempBufferSlice drawAutoArguments(uint64_t argument_offset);
+     the encoder's argument buffer. A draw through the geometry pipeline also
+     passes where its dispatch arguments go, as the arguments of
+     encodeGSDispatchArgumentsMarshal. */
+  AllocatedTempBufferSlice drawAutoArguments(
+      uint64_t argument_offset, AllocatedTempBufferSlice const *dispatch = nullptr,
+      uint32_t vertex_count_per_warp = 0, uint64_t max_object_threadgroups = 0
+  );
 
   void beginStreamOutputQuery(Rc<StreamOutputQuery> &&query);
   void endStreamOutputQuery(Rc<StreamOutputQuery> &&query);
@@ -1092,6 +1206,15 @@ private:
      buffers it writes them to */
   uint32_t so_gpu_draws_ = 0;
   std::vector<std::unique_ptr<StreamOutputReadbackBlock>> so_readback_blocks_;
+  /* The scratch buffer of the geometry draw between its passes: the
+     SO_GEOMETRY_RECORD of the write pass, the counts, the firsts and the
+     blocks, of which there are so_geometry_blocks_ */
+  AllocatedTempBufferSlice so_geometry_scratch_ = {};
+  uint32_t so_geometry_blocks_ = 0;
+  /* The flag so_geometry_prologue sets when it omits an indirect draw */
+  std::unique_ptr<StreamOutputReadbackBlock> so_geometry_omitted_;
+  /* The readback slot of the counters of a draw the GPU counts, or 0 */
+  uint64_t streamOutputCountersAddress();
 
   WMT::Reference<WMT::SamplerState> dummy_sampler_;
   WMTSamplerInfo dummy_sampler_info_;
