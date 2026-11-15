@@ -1895,6 +1895,7 @@ struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA32 {
   uint32_t strides[4];
   uint32_t elements;
   uint32_t topology;
+  uint32_t rasterized;
 };
 
 struct SM50_SHADER_COMMON_DATA32 {
@@ -1986,6 +1987,7 @@ sm50_compilation_argument32_convert(
       data->strides[3] = src->strides[3];
       data->elements = UInt32ToPtr(src->elements);
       data->topology = src->topology;
+      data->rasterized = src->rasterized;
       break;
     }
     case SM50_SHADER_COMMON: {

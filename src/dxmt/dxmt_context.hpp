@@ -165,7 +165,8 @@ struct SO_DRAW_TASK {
   uint32_t vertices_per_primitive;
   /* the declaration writes a slot that has no target */
   uint32_t unbound;
-  uint32_t reserved;
+  /* StreamOutputDraw::rasterized */
+  uint32_t rasterized;
 };
 
 /* What a DrawAuto passes to the vertex function so_draw_auto, which writes
@@ -198,6 +199,9 @@ struct StreamOutputDraw {
   uint8_t index_size;
   /* The list primitive the draw is encoded with */
   WMTPrimitiveType primitive_type;
+  /* The pipeline rasterizes the draw, so it runs also when nothing is
+     written */
+  bool rasterized;
   /* The offset of IASetIndexBuffer */
   uint32_t index_buffer_offset;
   /* The arguments of the D3D11 draw. An indirect draw and DrawAuto leave

@@ -329,6 +329,8 @@ public:
     return system_value_ != microsoft::D3D10_SB_NAME_UNDEFINED;
   }
 
+  microsoft::D3D10_SB_NAME systemValue() const { return system_value_; }
+
   RegisterComponentType componentType() const {
     return (RegisterComponentType)component_type_;
   }

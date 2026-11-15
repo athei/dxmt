@@ -63,6 +63,10 @@ public:
   llvm::Value *
   PopulateOutputSanitizePosition(uint32_t FromRegister, uint32_t Mask, llvm::Value *StructRet, uint32_t AtElement);
 
+  /* A position outside the clip volume */
+  llvm::Value *
+  PopulateOutputClippedPosition(llvm::Value *StructRet, uint32_t AtElement);
+
   llvm::Value *
   PopulateOutputDepth(llvm::Value *StructRet, uint32_t AtElement);
 

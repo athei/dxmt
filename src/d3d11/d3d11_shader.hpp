@@ -179,9 +179,11 @@ struct ShaderVariantVertexStreamOutput {
   uint64_t stream_output_layout_handle;
   /* SM50_STREAM_OUTPUT_TOPOLOGY */
   uint32_t topology;
+  bool rasterized;
   bool operator==(const this_type &rhs) const {
     return input_layout_handle == rhs.input_layout_handle &&
-           stream_output_layout_handle == rhs.stream_output_layout_handle && topology == rhs.topology;
+           stream_output_layout_handle == rhs.stream_output_layout_handle && topology == rhs.topology &&
+           rasterized == rhs.rasterized;
   }
 };
 

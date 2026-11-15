@@ -335,6 +335,7 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
     task->topology_step = draw.topology_step;
     task->vertices_per_primitive = draw.vertices_per_primitive;
     task->unbound = unbound;
+    task->rasterized = draw.rasterized;
     makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
         output.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
     );
@@ -367,7 +368,7 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
   so_counted_[0].needed += needed;
   so_counted_[0].written += written;
   // Without rasterization a draw that writes nothing does nothing
-  if (!written || vertex_count > UINT32_MAX)
+  if ((!written && !draw.rasterized) || !needed || vertex_count > UINT32_MAX)
     return;
 
   auto record = getMappedArgumentBuffer<SO_DRAW_RECORD>(argument_offset);

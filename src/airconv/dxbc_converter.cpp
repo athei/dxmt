@@ -609,7 +609,7 @@ llvm::Error convert_dxbc_vertex_shader(
   bool rasterization_disabled =
       (args_get_data<SM50_SHADER_GS_PASS_THROUGH, SM50_SHADER_GS_PASS_THROUGH_DATA>(pArgs, &gs_passthrough) &&
        gs_passthrough->RasterizationDisabled) ||
-      (vertex_so != nullptr);
+      (vertex_so != nullptr && !vertex_so->rasterized);
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
   SM50_SHADER_COMMON_DATA *sm50_common = nullptr;
@@ -665,6 +665,18 @@ llvm::Error convert_dxbc_vertex_shader(
     epilogue.Add([=, &so_draw, &so_output_vertex](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
       return io.PopulateOutputStreamOutput(value, vertex_so, output_masks, so_draw, so_output_vertex);
     });
+    // D3D11 rasterizes nothing defined from a stream without SV_Position, and
+    // Metal rasterizes only from a position
+    bool has_position = std::any_of(
+        pShaderInternal->output_signature.begin(), pShaderInternal->output_signature.end(),
+        [](auto &out) { return out.systemValue() == microsoft::D3D10_SB_NAME_POSITION; }
+    );
+    if (vertex_so->rasterized && !has_position) {
+      auto position_idx = func_signature.DefineOutput(air::OutputPosition{.type = air::msl_float4});
+      epilogue.Add([=](llvm::Value *value, IOHelper &io) -> llvm::Expected<llvm::Value *> {
+        return io.PopulateOutputClippedPosition(value, position_idx);
+      });
+    }
   }
 
   uint32_t vertex_idx = func_signature.DefineInput(air::InputVertexID{});

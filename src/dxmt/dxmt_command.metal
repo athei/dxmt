@@ -538,7 +538,7 @@ struct DXMTStreamOutputTask {
   uint topology_step;
   uint vertices_per_primitive;
   uint unbound;
-  uint reserved;
+  uint rasterized;
 };
 
 // Counts what a stream output draw writes when the encoding thread cannot:
@@ -609,8 +609,9 @@ struct DXMTStreamOutputTask {
     record.index_limit = 0;
   }
 
-  // MTLDrawPrimitivesIndirectArguments; nothing to draw when nothing is written
-  task.draw_arguments_out[0] = written ? (uint)vertex_count : 0;
+  // MTLDrawPrimitivesIndirectArguments; without rasterization nothing to draw
+  // when nothing is written
+  task.draw_arguments_out[0] = written || task.rasterized ? (uint)vertex_count : 0;
   task.draw_arguments_out[1] = instance_count;
   task.draw_arguments_out[2] = 0;
   task.draw_arguments_out[3] = start_instance;

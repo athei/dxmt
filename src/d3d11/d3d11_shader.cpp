@@ -327,6 +327,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(kStreamOutputDraw);
   h.update(getGlobalShaderFlag());
   h.update(variant.topology);
+  h.update(variant.rasterized);
   h.update(((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)->Digest());
   if (variant.input_layout_handle)
     h.update(variant.input_layout_handle->sha1());
@@ -339,6 +340,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data_so.next = common;
     data_so.num_output_slots = 0;
     data_so.topology = variant.topology;
+    data_so.rasterized = variant.rasterized;
     data_so.num_elements =
         ((IMTLD3D11StreamOutputLayout *)variant.stream_output_layout_handle)
             ->GetStreamOutputElements(

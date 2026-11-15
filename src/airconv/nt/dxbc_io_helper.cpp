@@ -384,6 +384,14 @@ IOHelper::PopulateOutputSanitizePosition(
 }
 
 llvm::Value *
+IOHelper::PopulateOutputClippedPosition(llvm::Value *StructRet, uint32_t to_element) {
+  auto position = llvm::ConstantVector::get(
+      {air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(-1.0f)}
+  );
+  return ir.CreateInsertValue(StructRet, position, {to_element});
+}
+
+llvm::Value *
 IOHelper::PopulateOutputDepth(llvm::Value *StructRet, uint32_t to_element) {
   auto value = ir.CreateLoad(types._float, ir.CreateConstInBoundsGEP1_32(types._float, io.depth_output_reg, 0));
   return ir.CreateInsertValue(StructRet, value, {to_element});
