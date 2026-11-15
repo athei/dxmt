@@ -5031,6 +5031,17 @@ public:
   };
 
   template <bool IndexedDraw>
+  SM50_INDEX_BUFFER_FORMAT
+  GetIndexBufferFormat() {
+    if constexpr (IndexedDraw) {
+      return state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? SM50_INDEX_BUFFER_FORMAT_UINT32
+                                                                            : SM50_INDEX_BUFFER_FORMAT_UINT16;
+    } else {
+      return SM50_INDEX_BUFFER_FORMAT_NONE;
+    }
+  }
+
+  template <bool IndexedDraw>
   void
   InitializeGraphicsPipelineDesc(MTL_GRAPHICS_PIPELINE_DESC &Desc) {
     // TODO: reduce branching
@@ -5083,13 +5094,7 @@ public:
     } else {
       Desc.GSStripTopology = false;
     }
-    if constexpr (IndexedDraw) {
-      Desc.IndexBufferFormat = state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT
-                                   ? SM50_INDEX_BUFFER_FORMAT_UINT32
-                                   : SM50_INDEX_BUFFER_FORMAT_UINT16;
-    } else {
-      Desc.IndexBufferFormat = SM50_INDEX_BUFFER_FORMAT_NONE;
-    }
+    Desc.IndexBufferFormat = GetIndexBufferFormat<IndexedDraw>();
     Desc.SampleCount = state_.OutputMerger.SampleCount;
     Desc.ShaderDepthBias = UseShaderDepthBias(Desc);
   }
@@ -5149,8 +5154,11 @@ public:
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeTessellationRenderPipeline() {
-    if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
-      return DrawCallStatus::Tessellation;
+    if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady) {
+      if (mesh_index_buffer_format_ == GetIndexBufferFormat<IndexedDraw>())
+        return DrawCallStatus::Tessellation;
+      InvalidateRenderPipeline();
+    }
     auto HS = GetManagedShader<PipelineStage::Hull>();
     if (!HS) {
       return DrawCallStatus::Invalid;
@@ -5210,6 +5218,7 @@ public:
     });
 
     cmdbuf_state = CommandBufferState::TessellationRenderPipelineReady;
+    mesh_index_buffer_format_ = pipelineDesc.IndexBufferFormat;
 
     if (previous_render_pipeline_state != CommandBufferState::TessellationRenderPipelineReady) {
       state_.InputAssembler.VertexBuffers.set_dirty();
@@ -5231,8 +5240,11 @@ public:
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeGeometryRenderPipeline() {
-    if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady)
-      return DrawCallStatus::Geometry;
+    if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady) {
+      if (mesh_index_buffer_format_ == GetIndexBufferFormat<IndexedDraw>())
+        return DrawCallStatus::Geometry;
+      InvalidateRenderPipeline();
+    }
     if (!SwitchToRenderEncoder()) {
       return DrawCallStatus::Invalid;
     }
@@ -5257,6 +5269,7 @@ public:
     });
 
     cmdbuf_state = CommandBufferState::GeometryRenderPipelineReady;
+    mesh_index_buffer_format_ = pipelineDesc.IndexBufferFormat;
 
     if (previous_render_pipeline_state != CommandBufferState::GeometryRenderPipelineReady) {
       state_.InputAssembler.VertexBuffers.set_dirty();
@@ -5631,6 +5644,11 @@ protected:
   CommandBufferState previous_render_pipeline_state = CommandBufferState::Idle;
   /* ShaderDepthBias of the last pipeline */
   bool shader_depth_bias_ = false;
+  /* IndexBufferFormat of the last tessellation or geometry pipeline: their
+     functions load the indices themselves and read the draw arguments of an
+     indexed or a non-indexed draw, and IASetIndexBuffer and the draw calls
+     invalidate nothing */
+  SM50_INDEX_BUFFER_FORMAT mesh_index_buffer_format_ = SM50_INDEX_BUFFER_FORMAT_NONE;
   ContextInternalState &ctx_state;
   ContextInternalState::device_mutex_t &mutex;
 
