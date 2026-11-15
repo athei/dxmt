@@ -143,7 +143,9 @@ ArgumentEncodingContext::encodePreRasterBarrier() {
 }
 
 void
-ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset) {
+ArgumentEncodingContext::encodeStreamOutputFunction(
+    WMT::RenderPipelineState pso, uint64_t argument_offset, uint32_t points
+) {
   auto encoder = currentRenderEncoder();
   auto &set_pso = encodeRenderCommand<wmtcmd_render_setpso>();
   set_pso.type = WMTRenderCommandSetPSO;
@@ -157,7 +159,7 @@ ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso
   run.type = WMTRenderCommandDraw;
   run.primitive_type = WMTPrimitiveTypePoint;
   run.vertex_start = 0;
-  run.vertex_count = 1;
+  run.vertex_count = points;
   run.base_instance = 0;
   run.instance_count = 1;
   encodePreRasterBarrier();
@@ -219,10 +221,14 @@ ArgumentEncodingContext::drawAutoVertexCount(uint32_t &vertex_count) {
 }
 
 AllocatedTempBufferSlice
-ArgumentEncodingContext::drawAutoArguments(uint64_t argument_offset) {
+ArgumentEncodingContext::drawAutoArguments(
+    uint64_t argument_offset, AllocatedTempBufferSlice const *dispatch, uint32_t vertex_count_per_warp,
+    uint64_t max_object_threadgroups
+) {
   auto &source = vbuf_[0];
   auto arguments = allocateTempBuffer1(kDrawArgumentsSize, 16);
   auto task = getMappedArgumentBuffer<SO_DRAW_AUTO_TASK>(argument_offset);
+  *task = {};
   task->filled = streamOutputFilledAddress(source.buffer.ptr());
   task->arguments_out = arguments.gpu_address + arguments.offset;
   task->offset = source.offset;
@@ -230,6 +236,14 @@ ArgumentEncodingContext::drawAutoArguments(uint64_t argument_offset) {
   makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
       arguments.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
   );
+  if (dispatch) {
+    task->dispatch_out = dispatch->gpu_address + dispatch->offset;
+    task->max_object_threadgroups = max_object_threadgroups;
+    task->vertex_count_per_warp = vertex_count_per_warp;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+        dispatch->gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
+    );
+  }
   // The barrier the vertex buffer read asks for has to come before the
   // function reads the filled size
   resolveRenderPassBarrier();
@@ -312,17 +326,7 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
     task->arguments = gpu_arguments;
     task->record_out = output.gpu_address + output.offset;
     task->draw_arguments_out = task->record_out + sizeof(SO_DRAW_RECORD);
-    if (so_active_queries_) {
-      auto index = so_gpu_draws_++;
-      if (index / kStreamOutputReadbackDraws >= so_readback_blocks_.size())
-        so_readback_blocks_.push_back(std::make_unique<StreamOutputReadbackBlock>(device_));
-      auto &block = so_readback_blocks_[index / kStreamOutputReadbackDraws];
-      task->counters_out = block->info.gpu_address + (index % kStreamOutputReadbackDraws) *
-                                                         kStreamOutputStreams * sizeof(StreamOutputCounters);
-      makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
-          block->buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, false, true)
-      );
-    }
+    task->counters_out = streamOutputCountersAddress();
     task->index_buffer = index_buffer;
     task->index_buffer_size = std::min<uint64_t>(index_buffer_size, UINT32_MAX);
     task->index_size = draw.index_size;
@@ -421,6 +425,154 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
   cmd.vertex_count = vertex_count;
   cmd.instance_count = draw.instance_count;
   cmd.base_instance = draw.start_instance;
+}
+
+uint64_t
+ArgumentEncodingContext::streamOutputCountersAddress() {
+  if (!so_active_queries_)
+    return 0;
+  auto index = so_gpu_draws_++;
+  if (index / kStreamOutputReadbackDraws >= so_readback_blocks_.size())
+    so_readback_blocks_.push_back(std::make_unique<StreamOutputReadbackBlock>(device_));
+  auto &block = so_readback_blocks_[index / kStreamOutputReadbackDraws];
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+      block->buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, false, true)
+  );
+  return block->info.gpu_address + (index % kStreamOutputReadbackDraws) * kStreamOutputStreams *
+                                       sizeof(StreamOutputCounters);
+}
+
+bool
+ArgumentEncodingContext::countGeometryStreamOutput(
+    const GeometryStreamOutputDraw &draw, uint64_t argument_offset, uint64_t threadgroups,
+    AllocatedTempBufferSlice const *dispatch, uint64_t arguments
+) {
+  // Compared before the product, which wraps for a large enough draw
+  if (!dispatch && threadgroups > kGeometryStreamOutputMaxMeshThreadgroups /
+                                      std::max<uint64_t>(draw.mesh_threadgroups, 1)) {
+    setCompatibilityFlag(FeatureCompatibility::UnsupportedGeometryDraw);
+    ERR_ONCE(
+        "Omitted a draw through a geometry shader that streams out: ", threadgroups, " object threadgroups of ",
+        draw.mesh_threadgroups, " mesh threadgroups, more than ", kGeometryStreamOutputMaxMeshThreadgroups
+    );
+    return false;
+  }
+  if (!so_geometry_count_pso)
+    return false;
+  // Every mesh threadgroup of the draw writes its count
+  uint64_t entries = dispatch ? kGeometryStreamOutputIndirectThreadgroups : threadgroups * draw.mesh_threadgroups;
+  uint64_t blocks = (entries + kGeometryStreamOutputBlock - 1) / kGeometryStreamOutputBlock;
+  so_geometry_blocks_ = uint32_t(blocks);
+  constexpr uint64_t record_size = 64;
+  static_assert(sizeof(SO_GEOMETRY_RECORD) <= record_size);
+  so_geometry_scratch_ =
+      allocateTempBuffer1(record_size + entries * 2 * sizeof(uint32_t) + blocks * 2 * sizeof(uint32_t), 16);
+  if (!so_geometry_scratch_.gpu_buffer) {
+    ERR_ONCE("Omitted a draw through a geometry shader that streams out: no scratch buffer");
+    return false;
+  }
+  uint64_t scratch = so_geometry_scratch_.gpu_address + so_geometry_scratch_.offset;
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+      so_geometry_scratch_.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true) |
+                                           GetResidencyMask<PipelineKind::Geometry>(PipelineStage::Geometry, true, true)
+  );
+
+  auto task = getMappedArgumentBuffer<SO_GEOMETRY_TASK>(argument_offset);
+  *task = {};
+  bool unbound = false;
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    if (!draw.strides[slot])
+      continue;
+    auto buffer = so_[slot].buffer.ptr();
+    if (!buffer) {
+      unbound = true;
+      continue;
+    }
+    auto allocation = buffer->current();
+    task->slots[slot].filled = streamOutputFilledAddress(buffer);
+    buffer->streamOutput.cell_index ^= 1;
+    task->slots[slot].filled_out = streamOutputFilledAddress(buffer);
+    task->slots[slot].buffer = allocation->gpuAddress() + allocation->currentSuballocationOffset();
+    task->slots[slot].size = buffer->length();
+    task->slots[slot].stride = draw.strides[slot];
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(buffer, false, true);
+  }
+  task->counts = scratch + record_size;
+  task->firsts = task->counts + entries * sizeof(uint32_t);
+  task->blocks = task->firsts + entries * sizeof(uint32_t);
+  task->block_count = so_geometry_blocks_;
+  task->record_out = scratch;
+  task->counters_out = streamOutputCountersAddress();
+  if (dispatch) {
+    task->dispatch = dispatch->gpu_address + dispatch->offset;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+        dispatch->gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, false)
+    );
+    task->arguments = arguments;
+    if (!so_geometry_omitted_) {
+      so_geometry_omitted_ = std::make_unique<StreamOutputReadbackBlock>(device_, sizeof(uint32_t));
+      *(uint32_t *)so_geometry_omitted_->info.memory.get() = 0;
+    }
+    if (*(volatile uint32_t *)so_geometry_omitted_->info.memory.get()) {
+      setCompatibilityFlag(FeatureCompatibility::UnsupportedGeometryDraw);
+      ERR_ONCE(
+          "Omitted an indirect draw through a geometry shader that streams out: more than ",
+          kGeometryStreamOutputIndirectThreadgroups, " mesh threadgroups"
+      );
+    }
+    task->omitted = so_geometry_omitted_->info.gpu_address;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+        so_geometry_omitted_->buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, false, true)
+    );
+  }
+  task->threadgroups = threadgroups;
+  task->mesh_threadgroups = draw.mesh_threadgroups;
+  task->vertices_per_primitive = draw.vertices_per_primitive;
+  task->unbound = unbound;
+
+  auto record = getMappedArgumentBuffer<SO_GEOMETRY_RECORD>(argument_offset + kGeometryStreamOutputRecordOffset);
+  *record = {};
+  record->counts = task->counts;
+  record->firsts = task->firsts;
+
+  auto &set_pso = encodeRenderCommand<wmtcmd_render_setpso>();
+  set_pso.type = WMTRenderCommandSetPSO;
+  set_pso.pso = so_geometry_count_pso;
+  auto &set_record = encodeRenderCommand<wmtcmd_render_setbuffer>();
+  set_record.type = WMTRenderCommandSetMeshBuffer;
+  set_record.buffer = getFinalArgumentBuffer();
+  set_record.offset = getFinalArgumentBufferOffset(argument_offset + kGeometryStreamOutputRecordOffset);
+  set_record.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+  return true;
+}
+
+void
+ArgumentEncodingContext::writeGeometryStreamOutput(const GeometryStreamOutputDraw &draw, uint64_t argument_offset) {
+  auto encoder = currentRenderEncoder();
+  // The counts of the pass before, for so_geometry_prologue
+  encodePreRasterBarrier();
+  if (so_geometry_blocks_ > 1)
+    encodeStreamOutputFunction(emulated_cmd.streamOutputGeometryBlockSums(), argument_offset, so_geometry_blocks_);
+  encodeStreamOutputFunction(emulated_cmd.streamOutputGeometryPrologue(), argument_offset);
+  if (so_geometry_blocks_ > 1)
+    encodeStreamOutputFunction(emulated_cmd.streamOutputGeometryBlockFirsts(), argument_offset, so_geometry_blocks_);
+  auto &set_record = encodeRenderCommand<wmtcmd_render_setbuffer>();
+  set_record.type = WMTRenderCommandSetMeshBuffer;
+  set_record.buffer = so_geometry_scratch_.gpu_buffer;
+  set_record.offset = so_geometry_scratch_.offset;
+  set_record.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+
+  // What the draw writes is known on the GPU alone: a draw after it whose
+  // output the encoding thread counts orders its stores after these
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto buffer = so_[slot].buffer.ptr();
+    if (!draw.strides[slot] || !buffer)
+      continue;
+    auto &state = buffer->streamOutput;
+    state.written_encoder = encoder->encoder_id_vertex;
+    state.written_barrier = encoder->pre_raster_barriers;
+    state.written_end = uint32_t(buffer->length());
+  }
 }
 
 void

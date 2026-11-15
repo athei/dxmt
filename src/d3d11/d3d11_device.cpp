@@ -466,10 +466,10 @@ public:
     if (!ppGeometryShader)
       return S_FALSE;
 
-    // Stream output is only emulated without rasterization
+    // D3D10 rasterizes stream 0
     return CreateStreamOutputShader(
-        pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides,
-        D3D11_SO_NO_RASTERIZED_STREAM, ppGeometryShader
+        pShaderBytecode, BytecodeLength, pSODeclaration, NumEntries, pBufferStrides, NumStrides, 0, ppGeometryShader,
+        true
     );
   }
 
@@ -496,27 +496,42 @@ public:
   CreateStreamOutputShader(
       const void *pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY *pSODeclaration,
       UINT NumEntries, const UINT *pBufferStrides, UINT NumStrides, UINT RasterizedStream,
-      ID3D11GeometryShader **ppGeometryShader
+      ID3D11GeometryShader **ppGeometryShader, bool EmulatePassThrough = false
   ) {
     if (!NumEntries)
       return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
 
-    // The emulation rasterizes the list it expands a draw to, which drops the
-    // strip cuts of an indexed draw, so a geometry shader with a rasterized
-    // stream keeps the pipeline that draws it and writes nothing
-    if (RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM &&
-        SUCCEEDED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_GEOMETRY_SHADER, GetFeatureLevel()))) {
-      WARN("CreateGeometryShaderWithStreamOutput: stream output not supported, expect problem");
-      return pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, ppGeometryShader);
+    // A geometry shader streams out from the geometry pipeline. Without one,
+    // the vertex shader's outputs are streamed out, which a geometry shader
+    // that passes its vertices through does not change. The emulation
+    // rasterizes the list it expands a draw to, which drops the strip cuts of
+    // an indexed draw, so a pass-through geometry shader with a rasterized
+    // stream keeps the pipeline that draws it and writes nothing, unless
+    // EmulatePassThrough. D3D10 passes it: there every stream output has a
+    // rasterized stream, and would otherwise write nothing.
+    Shader *geometry_shader = nullptr;
+    if (SUCCEEDED(ValidateShaderBytecode(pShaderBytecode, BytecodeLength, 1u << DXBC_GEOMETRY_SHADER, GetFeatureLevel()))) {
+      Com<ID3D11GeometryShader> shader;
+      HRESULT hr = pipeline_cache_->AddGeometryShader(pShaderBytecode, BytecodeLength, &shader);
+      if (FAILED(hr))
+        return hr;
+      auto managed_shader = com_cast<IMTLD3D11Shader>(shader.ptr())->GetManagedShader();
+      if (managed_shader->reflection().GeometryShader.GSPassThrough == ~0u) {
+        geometry_shader = managed_shader;
+      } else if (RasterizedStream != D3D11_SO_NO_RASTERIZED_STREAM && !EmulatePassThrough) {
+        WARN("CreateGeometryShaderWithStreamOutput: stream output not supported, expect problem");
+        *ppGeometryShader = shader.ref();
+        return S_OK;
+      }
     }
 
-    // FIXME: ensure the input shader is a vertex shader
+    // FIXME: domain shader bytecode streams out the vertex shader's outputs
     WARN("Emulate stream output");
 
     Com<IMTLD3D11StreamOutputLayout> so_layout;
     HRESULT hr = pipeline_cache_->AddStreamOutputLayout(
         pShaderBytecode, BytecodeLength, NumEntries, pSODeclaration, NumStrides,
-        pBufferStrides, RasterizedStream, &so_layout);
+        pBufferStrides, RasterizedStream, geometry_shader, &so_layout);
     if (SUCCEEDED(hr))
       return so_layout->QueryInterface(IID_PPV_ARGS(ppGeometryShader));
     WARN("CreateGeometryShaderWithStreamOutput: stream output not supported, expect problem");

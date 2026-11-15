@@ -306,6 +306,29 @@ get_gs_vertex_count(D3D11_PRIMITIVE_TOPOLOGY primitive) {
   DXMT_UNREACHABLE
 }
 
+/* The input primitives of a warp of the geometry pipeline, which are the mesh
+   threadgroups of an object threadgroup for each geometry shader instance:
+   get_vertex_primitive_count_in_warp of airconv for the D3D10_SB_PRIMITIVE of
+   the shader's input (MTL_GEOMETRY_SHADER_REFLECTION::Primitive) and the strip
+   flag of the pipeline; 0 for patches */
+inline uint32_t
+gs_primitives_per_warp(uint32_t primitive, bool strip) {
+  switch (primitive) {
+  case 1: // point
+    return 32;
+  case 2: // line
+    return strip ? 31 : 16;
+  case 3: // triangle
+    return strip ? 30 : 10;
+  case 6: // line with adjacency
+    return strip ? 29 : 8;
+  case 7: // triangle with adjacency
+    return strip ? 14 : 5;
+  default:
+    return 0;
+  }
+}
+
 struct Subresource {
   DXGI_FORMAT Format;
   uint32_t MipLevel;
@@ -1787,39 +1810,117 @@ public:
     });
   }
 
+  /* Emits a draw through the geometry pipeline, Draw(ArgumentEncodingContext &,
+     const GeometryStreamOutputDraw *, uint64_t) with the stream output of the
+     pipeline and where the draw has its bytes in the encoder's argument
+     buffer, or with null when the pipeline does not stream out */
+  template <typename Draw>
+  void
+  EmitGeometryDraw(Draw &&draw) {
+    if (likely(!so_geometry_valid_))
+      return EmitOP([draw = std::forward<Draw>(draw)](ArgumentEncodingContext &enc) { draw(enc, nullptr, 0); });
+    EmitOP([draw = std::forward<Draw>(draw), so = so_geometry_,
+            so_offset = PreAllocateArgumentBuffer(kGeometryStreamOutputArgumentSize, 32)](ArgumentEncodingContext &enc) {
+      draw(enc, &so, so_offset);
+    });
+  }
+
+  /* An indirect draw that streams out from a geometry shader has room for
+     the counts of so many object threadgroups */
+  static uint64_t
+  GeometryIndirectThreadgroups(uint64_t max_object_threadgroups, const GeometryStreamOutputDraw *so) {
+    if (!so)
+      return max_object_threadgroups;
+    return std::min<uint64_t>(max_object_threadgroups, kGeometryStreamOutputIndirectThreadgroups / so->mesh_threadgroups);
+  }
+
+  /* DrawAuto through the geometry pipeline from a filled size only the GPU
+     knows: so_draw_auto writes its draw and dispatch arguments */
+  static void
+  GeometryDrawAuto(
+      ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset, uint64_t auto_offset,
+      D3D11_PRIMITIVE_TOPOLOGY topo, uint64_t max_object_threadgroups
+  ) {
+    auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
+    auto dispatch = enc.allocateTempBuffer1(sizeof(DXMT_DISPATCH_ARGUMENTS), 4);
+    auto arguments = enc.drawAutoArguments(
+        auto_offset, &dispatch, vertex_increment_per_wrap, GeometryIndirectThreadgroups(max_object_threadgroups, so)
+    );
+    enc.bumpVisibilityResultOffset();
+    enc.resolveRenderPassBarrier();
+    auto encode = [&, per_warp = vertex_per_warp]() {
+      auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
+      cmd.type = WMTRenderCommandDXMTGeometryDrawIndirect;
+      cmd.dispatch_args_buffer = dispatch.gpu_buffer;
+      cmd.dispatch_args_offset = dispatch.offset;
+      cmd.vertex_per_warp = per_warp;
+      cmd.indirect_args_buffer = arguments.gpu_buffer;
+      cmd.indirect_args_offset = arguments.offset;
+      cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+    };
+    if (so) {
+      if (!enc.countGeometryStreamOutput(*so, so_offset, 0, &dispatch, arguments.gpu_address + arguments.offset))
+        return;
+      encode();
+      enc.writeGeometryStreamOutput(*so, so_offset);
+    }
+    encode();
+  }
+
   void
   GeometryDraw(
       UINT VertexCount, UINT InstanceCount, UINT StartVertexLocation,
       UINT StartInstanceLocation, bool Auto = false
   ) {
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_ARGUMENTS), 32);
+    // DrawAuto from a filled size only the GPU knows takes its arguments and
+    // dispatch from so_draw_auto
+    uint64_t auto_offset = Auto ? PreAllocateArgumentBuffer(sizeof(SO_DRAW_AUTO_TASK), 32) : 0;
     auto max_object_threadgroups = max_object_threadgroups_;
-    EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
+    EmitGeometryDraw([=, topo = state_.InputAssembler.Topology](
+                         ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
+                     ) {
+      auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
       uint32_t VertexCountPerInstance = VertexCount;
-      if (Auto && !DrawAutoVertexCount(enc, VertexCountPerInstance))
-        return;
+      if (Auto) {
+        if (enc.drawAutoVertexCount(VertexCountPerInstance)) {
+          if (!VertexCountPerInstance)
+            return;
+        } else {
+          return GeometryDrawAuto(enc, so, so_offset, auto_offset, topo, max_object_threadgroups);
+        }
+      }
       DXMT_DRAW_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_ARGUMENTS>(draw_arguments_offset);
       draw_argument->StartVertex = StartVertexLocation;
       draw_argument->VertexCount = VertexCountPerInstance;
       draw_argument->InstanceCount = InstanceCount;
       draw_argument->StartInstance = StartInstanceLocation;
 
-      auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
-      auto warp_count = (VertexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
+      uint32_t warp_count = (VertexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
+      uint64_t threadgroups = uint64_t(warp_count) * InstanceCount;
 
-      if (warp_count * InstanceCount > max_object_threadgroups) {
+      if (threadgroups > max_object_threadgroups) {
         WARN("Omitted mesh draw (GS) because of too many object threadgroups(", warp_count, "x", InstanceCount, ")");
         return;
       }
 
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
-      auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw>();
-      cmd.type = WMTRenderCommandDXMTGeometryDraw;
-      cmd.draw_arguments_offset = enc.getFinalArgumentBufferOffset(draw_arguments_offset);
-      cmd.instance_count = InstanceCount;
-      cmd.warp_count = warp_count;
-      cmd.vertex_per_warp = vertex_per_warp;
+      auto encode = [&, per_warp = vertex_per_warp]() {
+        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw>();
+        cmd.type = WMTRenderCommandDXMTGeometryDraw;
+        cmd.draw_arguments_offset = enc.getFinalArgumentBufferOffset(draw_arguments_offset);
+        cmd.instance_count = InstanceCount;
+        cmd.warp_count = warp_count;
+        cmd.vertex_per_warp = per_warp;
+      };
+      if (so) {
+        if (!enc.countGeometryStreamOutput(*so, so_offset, threadgroups, nullptr, 0))
+          return;
+        encode();
+        enc.writeGeometryStreamOutput(*so, so_offset);
+      }
+      encode();
     });
   }
 
@@ -1831,7 +1932,9 @@ public:
     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
-    EmitOP([=, topo = state_.InputAssembler.Topology](ArgumentEncodingContext &enc) {
+    EmitGeometryDraw([=, topo = state_.InputAssembler.Topology](
+                         ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
+                     ) {
       DXMT_DRAW_INDEXED_ARGUMENTS *draw_argument = enc.getMappedArgumentBuffer<DXMT_DRAW_INDEXED_ARGUMENTS>(draw_arguments_offset);
       draw_argument->BaseVertex = BaseVertexLocation;
       draw_argument->IndexCount = IndexCountPerInstance;
@@ -1841,23 +1944,34 @@ public:
 
       auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
       auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
-      auto warp_count = (IndexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
+      uint32_t warp_count = (IndexCountPerInstance - 1) / vertex_increment_per_wrap + 1;
+      uint64_t threadgroups = uint64_t(warp_count) * InstanceCount;
 
-      if (warp_count * InstanceCount > max_object_threadgroups) {
+      if (threadgroups > max_object_threadgroups) {
         WARN("Omitted mesh draw (GS) because of too many object threadgroups(", warp_count, "x", InstanceCount, ")");
         return;
       }
 
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
-      auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed>();
-      cmd.type = WMTRenderCommandDXMTGeometryDrawIndexed;
-      cmd.draw_arguments_offset = enc.getFinalArgumentBufferOffset(draw_arguments_offset);
-      cmd.instance_count = InstanceCount;
-      cmd.warp_count = warp_count;
-      cmd.vertex_per_warp = vertex_per_warp;
-      cmd.index_buffer = index_buffer;
-      cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+      auto encode = [&, buffer = index_buffer, offset = IndexBufferOffset + index_sub_offset,
+                     per_warp = vertex_per_warp]() {
+        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed>();
+        cmd.type = WMTRenderCommandDXMTGeometryDrawIndexed;
+        cmd.draw_arguments_offset = enc.getFinalArgumentBufferOffset(draw_arguments_offset);
+        cmd.instance_count = InstanceCount;
+        cmd.warp_count = warp_count;
+        cmd.vertex_per_warp = per_warp;
+        cmd.index_buffer = buffer;
+        cmd.index_buffer_offset = offset;
+      };
+      if (so) {
+        if (!enc.countGeometryStreamOutput(*so, so_offset, threadgroups, nullptr, 0))
+          return;
+        encode();
+        enc.writeGeometryStreamOutput(*so, so_offset);
+      }
+      encode();
     });
   }
 
@@ -1947,28 +2061,43 @@ public:
   ) {
     auto max_object_threadgroups = max_object_threadgroups_;
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
-      EmitOP([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+      EmitGeometryDraw([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](
+                           ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
+                       ) {
         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_ARGUMENTS), ResourceAccess::Read
         );
         auto dispatch_arg = enc.allocateTempBuffer1(sizeof(DXMT_DISPATCH_ARGUMENTS), 4);
 
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
-  
+
         enc.bumpVisibilityResultOffset();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset,
+          GeometryIndirectThreadgroups(max_object_threadgroups, so)
         );
         enc.resolveRenderPassBarrier();
-        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
-        cmd.type = WMTRenderCommandDXMTGeometryDrawIndirect;
-        cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
-        cmd.dispatch_args_offset = dispatch_arg.offset;
-        cmd.vertex_per_warp = vertex_per_warp;
-        cmd.indirect_args_buffer = buffer->buffer();
-        cmd.indirect_args_offset = buffer_offset + AlignedByteOffsetForArgs;
-        cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        auto encode = [&, args = buffer->buffer(), args_offset = buffer_offset + AlignedByteOffsetForArgs,
+                       per_warp = vertex_per_warp]() {
+          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indirect>();
+          cmd.type = WMTRenderCommandDXMTGeometryDrawIndirect;
+          cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
+          cmd.dispatch_args_offset = dispatch_arg.offset;
+          cmd.vertex_per_warp = per_warp;
+          cmd.indirect_args_buffer = args;
+          cmd.indirect_args_offset = args_offset;
+          cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        };
+        if (so) {
+          if (!enc.countGeometryStreamOutput(
+                  *so, so_offset, 0, &dispatch_arg, buffer->gpuAddress() + buffer_offset + AlignedByteOffsetForArgs
+              ))
+            return;
+          encode();
+          enc.writeGeometryStreamOutput(*so, so_offset);
+        }
+        encode();
       });
     }
   }
@@ -1981,7 +2110,9 @@ public:
     auto max_object_threadgroups = max_object_threadgroups_;
 
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
-      EmitOP([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+      EmitGeometryDraw([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](
+                           ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
+                       ) {
         auto [buffer, buffer_offset] = enc.access<PipelineStage::Vertex>(
             ArgBuffer, AlignedByteOffsetForArgs, sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), ResourceAccess::Read
         );
@@ -1989,23 +2120,36 @@ public:
 
         auto [vertex_per_warp, vertex_increment_per_wrap] = get_gs_vertex_count(topo);
         auto [index_buffer, index_sub_offset] = enc.currentIndexBuffer();
-  
+
         enc.bumpVisibilityResultOffset();
         enc.encodeGSDispatchArgumentsMarshal(
           buffer->buffer(), buffer->gpuAddress() + buffer_offset, AlignedByteOffsetForArgs, vertex_increment_per_wrap,
-          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset, max_object_threadgroups
+          dispatch_arg.gpu_buffer, dispatch_arg.gpu_address, dispatch_arg.offset,
+          GeometryIndirectThreadgroups(max_object_threadgroups, so)
         );
         enc.resolveRenderPassBarrier();
-        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed_indirect>();
-        cmd.type = WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
-        cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
-        cmd.dispatch_args_offset = dispatch_arg.offset;
-        cmd.vertex_per_warp = vertex_per_warp;
-        cmd.indirect_args_buffer = buffer->buffer();
-        cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
-        cmd.index_buffer = index_buffer;
-        cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
-        cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        auto encode = [&, args = buffer->buffer(), args_offset = AlignedByteOffsetForArgs + buffer_offset,
+                       per_warp = vertex_per_warp, ib = index_buffer, ib_offset = IndexBufferOffset + index_sub_offset]() {
+          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed_indirect>();
+          cmd.type = WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
+          cmd.dispatch_args_buffer = dispatch_arg.gpu_buffer;
+          cmd.dispatch_args_offset = dispatch_arg.offset;
+          cmd.vertex_per_warp = per_warp;
+          cmd.indirect_args_buffer = args;
+          cmd.indirect_args_offset = args_offset;
+          cmd.index_buffer = ib;
+          cmd.index_buffer_offset = ib_offset;
+          cmd.imm_draw_arguments = enc.getFinalArgumentBuffer();
+        };
+        if (so) {
+          if (!enc.countGeometryStreamOutput(
+                  *so, so_offset, 0, &dispatch_arg, buffer->gpuAddress() + buffer_offset + AlignedByteOffsetForArgs
+              ))
+            return;
+          encode();
+          enc.writeGeometryStreamOutput(*so, so_offset);
+        }
+        encode();
       });
     }
   }
@@ -2129,14 +2273,14 @@ public:
     });
   }
 
-  /* The vertex count of a DrawAuto through the geometry or tessellation
-     pipeline, whose draws take their arguments from the encoding thread */
+  /* The vertex count of a DrawAuto through the tessellation pipeline, whose
+     draws take their arguments from the encoding thread */
   static bool
   DrawAutoVertexCount(ArgumentEncodingContext &enc, uint32_t &vertex_count) {
     if (enc.drawAutoVertexCount(vertex_count))
       return vertex_count != 0;
     enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedDrawAuto);
-    ERR_ONCE("DrawAuto through a geometry shader or tessellation is not drawn when only the GPU knows the filled size");
+    ERR_ONCE("DrawAuto through tessellation is not drawn when only the GPU knows the filled size");
     return false;
   }
 
@@ -4611,6 +4755,43 @@ public:
      the topology */
   bool so_draw_valid_ = false;
   StreamOutputDraw so_draw_ = {};
+  /* While so_geometry_valid_, the geometry pipeline streams out from the
+     geometry shader as so_geometry_ says */
+  bool so_geometry_valid_ = false;
+  GeometryStreamOutputDraw so_geometry_ = {};
+
+  bool
+  InitializeGeometryStreamOutput(const MTL_GRAPHICS_PIPELINE_DESC &Desc) {
+    so_geometry_ = {};
+    MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *elements;
+    uint32_t strides[kStreamOutputSlots];
+    uint32_t num_elements = Desc.SOLayout->GetStreamOutputElements(&elements, strides);
+    for (unsigned i = 0; i < num_elements; i++) {
+      if (elements[i].OutputSlot < kStreamOutputSlots)
+        so_geometry_.strides[elements[i].OutputSlot] = strides[elements[i].OutputSlot];
+    }
+    auto &reflection = Desc.GeometryShader->reflection().GeometryShader;
+    // The tokenized output topology has the value of D3D_PRIMITIVE_TOPOLOGY
+    switch (reflection.OutputTopology) {
+    case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+      so_geometry_.vertices_per_primitive = 1;
+      break;
+    case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+      so_geometry_.vertices_per_primitive = 2;
+      break;
+    case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+      so_geometry_.vertices_per_primitive = 3;
+      break;
+    default:
+      return false;
+    }
+    // What the grid of the mesh function has, which the counts are sized by
+    uint32_t primitives = gs_primitives_per_warp(reflection.Primitive, Desc.GSStripTopology);
+    if (!primitives)
+      return false;
+    so_geometry_.mesh_threadgroups = primitives * std::max(reflection.InstanceCount, 1u);
+    return true;
+  }
 
   bool
   InitializeStreamOutputDraw(const MTL_GRAPHICS_PIPELINE_DESC &Desc, uint8_t &Topology) {
@@ -5258,12 +5439,21 @@ public:
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
     UpdateShaderDepthBias(pipelineDesc.ShaderDepthBias);
+    so_geometry_valid_ = false;
+    if (pipelineDesc.SOLayout) {
+      if (!InitializeGeometryStreamOutput(pipelineDesc))
+        return DrawCallStatus::Invalid;
+      so_geometry_valid_ = true;
+      // Targets bound while the pipeline did not stream out were not recorded
+      state_.StreamOutput.Targets.set_dirty();
+    }
     device->CreateGeometryPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       auto render_encoder = enc.currentRenderEncoder();
       render_encoder->use_geometry = 1;
       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
       pso->GetPipeline(&GraphicsPipeline); // may block
+      enc.so_geometry_count_pso = GraphicsPipeline.StreamOutputCountState;
       if (!GraphicsPipeline.PipelineState)
         return;
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
@@ -5283,6 +5473,7 @@ public:
       state_.ShaderStages[PipelineStage::Geometry].ConstantBuffers.set_dirty();
       state_.ShaderStages[PipelineStage::Geometry].SRVs.set_dirty();
       state_.ShaderStages[PipelineStage::Geometry].Samplers.set_dirty();
+      state_.StreamOutput.Targets.set_dirty();
       previous_render_pipeline_state = CommandBufferState::GeometryRenderPipelineReady;
     }
 
@@ -5533,12 +5724,11 @@ public:
       return;
     }
 
-    if (cmdbuf_state == CommandBufferState::RenderPipelineReady)
+    if (cmdbuf_state == CommandBufferState::RenderPipelineReady ||
+        (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady && so_geometry_valid_))
       EmitST([](ArgumentEncodingContext &enc) { enc.trackStreamOutputTargets(); });
     else if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
       EmitST([](ArgumentEncodingContext &enc) { ERR("unimplemented stream output from tessellation pipeline"); });
-    else if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady)
-      EmitST([](ArgumentEncodingContext &enc) { ERR("unimplemented stream output from geometry pipeline"); });
 
     state_.StreamOutput.Targets.clear_dirty();
   }

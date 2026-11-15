@@ -1898,6 +1898,16 @@ struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA32 {
   uint32_t rasterized;
 };
 
+struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t pass;
+  uint32_t num_elements;
+  uint32_t strides[4];
+  uint32_t elements;
+  uint32_t rasterized;
+};
+
 struct SM50_SHADER_COMMON_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -1987,6 +1997,21 @@ sm50_compilation_argument32_convert(
       data->strides[3] = src->strides[3];
       data->elements = UInt32ToPtr(src->elements);
       data->topology = src->topology;
+      data->rasterized = src->rasterized;
+      break;
+    }
+    case SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT: {
+      struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *data =
+          malloc(sizeof(struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->pass = src->pass;
+      data->num_elements = src->num_elements;
+      memcpy(data->strides, src->strides, sizeof(data->strides));
+      data->elements = UInt32ToPtr(src->elements);
       data->rasterized = src->rasterized;
       break;
     }

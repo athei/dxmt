@@ -181,7 +181,7 @@ private:
       return container->QueryInterface(riid, ppvObject);
     }
 
-    virtual ManagedShader GetManagedShader() override { return nullptr; };
+    virtual ManagedShader GetManagedShader() override { return container->desc_.GeometryShader; };
     void AddRefPrivate() override { container->AddRefPrivate(); }
     void ReleasePrivate() override { container->ReleasePrivate(); }
   };

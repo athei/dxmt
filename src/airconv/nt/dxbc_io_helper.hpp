@@ -16,6 +16,26 @@ namespace dxmt::dxbc {
 
 struct io_binding_map;
 
+/* What a pass of a geometry shader that streams out keeps while the shader
+   runs (SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA) */
+struct GeometryStreamOutput {
+  const SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *data;
+  uint32_t vertices_per_primitive;
+  /* the dxmt_geometry_stream_output */
+  llvm::Value *record;
+  /* where the threadgroup's count is, in the order of the draw */
+  llvm::Value *index;
+  /* write pass: what the count pass counted, and the position of the
+     threadgroup's first primitive */
+  llvm::Value *count;
+  llvm::Value *first;
+  /* vertices emitted since the last cut, and primitives completed */
+  llvm::Value *strip_vertices;
+  llvm::Value *primitives;
+  /* write pass: the streamed out components of the two vertices before */
+  llvm::Value *previous;
+};
+
 class IOHelper {
 public:
   IOHelper(llvm::air::AIRBuilder &air, llvm::Function *function, air::AirType &types, io_binding_map &io_legacy);
@@ -94,6 +114,22 @@ public:
       llvm::Value *StructRet, const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *VertexSO,
       const std::vector<uint8_t> &OutputMasks, llvm::Value *StreamOutputDraw, llvm::Value *OutputVertex
   );
+
+  /* Index is the threadgroup's place in the draw; VerticesPerPrimitive
+     follows from the output topology of the geometry shader */
+  GeometryStreamOutput InitializeGeometryStreamOutput(
+      const SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *Data, uint32_t RecordArgumentIndex, llvm::Value *Index,
+      uint32_t VerticesPerPrimitive
+  );
+
+  /* An emit of the stream: completes a primitive once the strip has enough
+     vertices, which the write pass stores below the limit as a list */
+  void EmitGeometryStreamOutput(GeometryStreamOutput &State);
+
+  void CutGeometryStreamOutput(GeometryStreamOutput &State);
+
+  /* The end of the shader: the count pass stores its count */
+  void FinishGeometryStreamOutput(GeometryStreamOutput &State);
 
   void PopulateMeshOutputRenderTargetArrayIndex(uint32_t FromRegister, uint32_t Mask, llvm::Value *PrimitiveId);
 

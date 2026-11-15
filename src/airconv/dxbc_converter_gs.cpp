@@ -111,6 +111,12 @@ convert_dxbc_geometry_shader(
   if (args_get_data<SM50_SHADER_PSO_GEOMETRY_SHADER, SM50_SHADER_PSO_GEOMETRY_SHADER_DATA>(pArgs, &pso_data)) {
     is_strip = pso_data->strip_topology;
   }
+  SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *stream_output = nullptr;
+  args_get_data<SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT, SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA>(
+      pArgs, &stream_output
+  );
+  bool build_mesh =
+      !stream_output || (stream_output->pass == SM50_GEOMETRY_STREAM_OUTPUT_WRITE && stream_output->rasterized);
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
   SM50_SHADER_COMMON_DATA *sm50_common = nullptr;
@@ -133,6 +139,18 @@ convert_dxbc_geometry_shader(
       p(sig_ctx);
     }
   }
+  uint32_t stream_output_idx = ~0u;
+  if (stream_output)
+    stream_output_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_STREAM_OUTPUT0,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::constant,
+        .type = air::MSLUint{},
+        .arg_name = "geometry_stream_output",
+        .raster_order_group = {}
+    });
   auto& gs_output_handlers = pShaderInternal->mesh_output_handlers;
 
   auto binding_map = rootsig ? setup_binding_rootsig(
@@ -329,6 +347,19 @@ convert_dxbc_geometry_shader(
       // there is nothing to cut!
     };
   }
+  GeometryStreamOutput stream_output_state = {};
+  if (stream_output) {
+    resource_map.call_emit = [&, emit = std::move(resource_map.call_emit)]() {
+      if (build_mesh)
+        emit();
+      io.EmitGeometryStreamOutput(stream_output_state);
+    };
+    resource_map.call_cut = [&, cut = std::move(resource_map.call_cut)]() {
+      if (build_mesh)
+        cut();
+      io.CutGeometryStreamOutput(stream_output_state);
+    };
+  }
 
   auto payload = function->getArg(payload_idx);
   auto valid_primitive_mask =
@@ -337,6 +368,26 @@ convert_dxbc_geometry_shader(
       builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, 2));
 
   resource_map.patch_id = builder.CreateAdd(builder.CreateMul(warp_id, builder.getInt32(warp_primitive_count)), primitive_id_in_warp);
+  if (stream_output) {
+    // In the order of the draw: instances, input primitives, geometry shader
+    // instances. The object function passes the instance and its number of
+    // threadgroups.
+    auto instance = builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, 0));
+    auto warps = builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, 3));
+    auto primitive = builder.CreateAdd(
+        builder.CreateMul(
+            builder.CreateAdd(builder.CreateMul(instance, warps), warp_id), builder.getInt32(warp_primitive_count)
+        ),
+        primitive_id_in_warp
+    );
+    auto index = builder.CreateAdd(
+        builder.CreateMul(primitive, builder.getInt32(pShaderInternal->gs_instance_count)), resource_map.gs_instance_id
+    );
+    uint32_t vertices = topology == air::MeshOutputTopology::Triangle ? 3
+                        : topology == air::MeshOutputTopology::Line   ? 2
+                                                                      : 1;
+    stream_output_state = io.InitializeGeometryStreamOutput(stream_output, stream_output_idx, index, vertices);
+  }
 
   auto input_per_vertex_type = llvm::ArrayType::get(types._int4, pVertexStage->max_output_register);
   auto input_per_vertex_type_float = llvm::ArrayType::get(types._float4, pVertexStage->max_output_register);
@@ -506,7 +557,11 @@ convert_dxbc_geometry_shader(
     return err;
   }
   resource_map.call_cut();
-  if (topology == air::MeshOutputTopology::Point)
+  if (stream_output)
+    io.FinishGeometryStreamOutput(stream_output_state);
+  if (!build_mesh)
+    air.CreateSetMeshPrimitiveCount(builder.getInt32(0));
+  else if (topology == air::MeshOutputTopology::Point)
     air.CreateSetMeshPrimitiveCount(builder.CreateLoad(types._int, next_write_vertex));
   else
     air.CreateSetMeshPrimitiveCount(builder.CreateLoad(types._int, primitive_count));
@@ -577,6 +632,14 @@ convert_dxbc_vertex_for_geometry_shader(
   // warp_count = ceil(index_count / warp_size)
   uint32_t tg_id_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
   func_signature.DefineInput(air::InputMeshGridProperties{});
+  // The mesh function of a geometry shader that streams out takes its place
+  // in the draw from the number of threadgroups
+  SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA *stream_output = nullptr;
+  uint32_t tg_count_idx = ~0u;
+  if (args_get_data<SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT, SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA>(
+          pArgs, &stream_output
+      ))
+    tg_count_idx = func_signature.DefineInput(air::InputThreadgroupsPerGrid{});
   uint32_t draw_argument_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
       .location_index = SM50_BINDING_INDEX_DRAW_ARGUMENTS,
@@ -931,6 +994,12 @@ convert_dxbc_vertex_for_geometry_shader(
   builder.CreateStore(valid_primitive_mask, builder.CreateConstInBoundsGEP1_32(types._int, payload, 1));
 
   builder.CreateStore(warp_id, builder.CreateConstInBoundsGEP1_32(types._int, payload, 2));
+
+  if (tg_count_idx != ~0u)
+    builder.CreateStore(
+        builder.CreateExtractElement(function->getArg(tg_count_idx), (uint32_t)0),
+        builder.CreateConstInBoundsGEP1_32(types._int, payload, 3)
+    );
 
   air.CreateSetMeshProperties(air.getInt3(warp_primitive_count, pGeometryStage->gs_instance_count, 1));
 

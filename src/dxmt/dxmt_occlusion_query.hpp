@@ -494,15 +494,19 @@ private:
 
 constexpr uint32_t kStreamOutputReadbackDraws = 256;
 
-/* A buffer the GPU writes the counters of kStreamOutputReadbackDraws draws to */
+/* A buffer the GPU writes the counters of kStreamOutputReadbackDraws draws to,
+   or other data of the given length that the CPU reads */
 struct StreamOutputReadbackBlock {
   WMTBufferInfo info;
   WMT::Reference<WMT::Buffer> buffer;
 
-  StreamOutputReadbackBlock(WMT::Device device) {
+  StreamOutputReadbackBlock(
+      WMT::Device device,
+      uint64_t length = kStreamOutputReadbackDraws * kStreamOutputStreams * sizeof(StreamOutputCounters)
+  ) {
     info.options = WMTResourceHazardTrackingModeUntracked;
     info.memory.set(nullptr);
-    info.length = kStreamOutputReadbackDraws * kStreamOutputStreams * sizeof(StreamOutputCounters);
+    info.length = length;
 #ifdef __i386__
     info.memory.set(wsi::aligned_malloc(info.length, DXMT_PAGE_SIZE));
 #endif

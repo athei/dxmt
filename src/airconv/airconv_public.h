@@ -91,6 +91,7 @@ struct MTL_GEOMETRY_SHADER_REFLECTION {
   };
   uint32_t Primitive;
   uint32_t OutputTopology;
+  uint32_t InstanceCount;
 };
 
 struct MTL_POST_TESSELLATOR_REFLECTION {
@@ -209,6 +210,7 @@ enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE {
   SM50_SHADER_PSO_TESSELLATOR = 7,
   SM50_SHADER_ROOT_SIGNATURE = 8,
   SM50_SHADER_ROOT_SIGNATURE2 = 9,
+  SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT = 10,
   SM50_SHADER_ARGUMENT_TYPE_MAX = 0xffffffff,
 };
 
@@ -247,6 +249,30 @@ struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA {
   /* enum SM50_STREAM_OUTPUT_TOPOLOGY */
   uint32_t topology;
   /* the function also returns its outputs, for the rasterized stream */
+  uint32_t rasterized;
+};
+
+/* A geometry shader that streams out runs twice in the geometry pipeline:
+   the mesh function counts the primitives each of its threadgroups emits,
+   and then writes them at the positions a function between the two passes
+   adds the counts up to. Both read a dxmt_geometry_stream_output at
+   SM50_BINDING_INDEX_STREAM_OUTPUT0. */
+enum SM50_GEOMETRY_STREAM_OUTPUT_PASS {
+  SM50_GEOMETRY_STREAM_OUTPUT_COUNT = 0,
+  SM50_GEOMETRY_STREAM_OUTPUT_WRITE = 1,
+};
+
+/* Given to the object function of such a pipeline too, which then passes the
+   number of its threadgroups to the mesh function */
+struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA {
+  void *next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  /* enum SM50_GEOMETRY_STREAM_OUTPUT_PASS */
+  uint32_t pass;
+  uint32_t num_elements;
+  uint32_t strides[4];
+  struct SM50_STREAM_OUTPUT_ELEMENT *elements;
+  /* the write pass also builds the mesh of the stream */
   uint32_t rasterized;
 };
 

@@ -75,6 +75,18 @@ AirType::AirType(LLVMContext &context) : context(context) {
     "dxmt_stream_output_draw"
   );
 
+  _dxmt_geometry_stream_output = StructType::create(
+    context,
+    {
+      ArrayType::get(_int->getPointerTo((uint32_t)AddressSpace::device), 4), // output slots
+      _int->getPointerTo((uint32_t)AddressSpace::device), // counts
+      _int->getPointerTo((uint32_t)AddressSpace::device), // first primitives
+      _int, // primitive limit
+      _int, // reserved
+    },
+    "dxmt_geometry_stream_output"
+  );
+
   _dxmt_draw_arguments = StructType::create(
     context,
     {

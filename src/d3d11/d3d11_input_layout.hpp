@@ -16,6 +16,7 @@ struct MTL_SHADER_INPUT_LAYOUT_ELEMENT_DESC {
 
 namespace dxmt {
 class InputLayout;
+class Shader;
 };
 typedef dxmt::InputLayout *ManagedInputLayout;
 
@@ -79,6 +80,9 @@ struct MTL_STREAM_OUTPUT_DESC {
   uint32_t RasterizedStream;
   uint32_t Strides[4];
   std::vector<MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC> Elements;
+  /* The geometry shader whose output is streamed out, or null to stream out
+     the vertex shader's */
+  dxmt::Shader *GeometryShader;
 };
 
 namespace std {
@@ -113,6 +117,7 @@ template <> struct hash<MTL_STREAM_OUTPUT_DESC> {
     state.add(v.Strides[1]);
     state.add(v.Strides[2]);
     state.add(v.Strides[3]);
+    state.add((size_t)v.GeometryShader);
     for (auto &element : v.Elements) {
       state.add(std::hash<string_view>{}(
           {reinterpret_cast<const char *>(&element), sizeof(element)}));
@@ -126,7 +131,8 @@ template <> struct equal_to<MTL_STREAM_OUTPUT_DESC> {
                   const MTL_STREAM_OUTPUT_DESC &y) const {
     auto binsize =
         x.Elements.size() * sizeof(MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC);
-    return x.RasterizedStream == y.RasterizedStream && x.Strides[0] == y.Strides[0] && x.Strides[1] == y.Strides[1] &&
+    return x.RasterizedStream == y.RasterizedStream && x.GeometryShader == y.GeometryShader &&
+           x.Strides[0] == y.Strides[0] && x.Strides[1] == y.Strides[1] &&
            x.Strides[2] == y.Strides[2] && x.Strides[3] == y.Strides[3] && x.Elements.size() == y.Elements.size() &&
            (std::string_view({reinterpret_cast<const char *>(x.Elements.data()), binsize}) ==
             std::string_view({reinterpret_cast<const char *>(y.Elements.data()), binsize}));
