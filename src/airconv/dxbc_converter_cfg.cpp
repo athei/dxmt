@@ -637,19 +637,16 @@ read_control_flow(
       break;
     }
     case D3D11_SB_OPCODE_EMIT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstEmit{});
+      bb_current->instructions.push_back(InstEmit{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     case D3D11_SB_OPCODE_EMITTHENCUT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstEmit{});
-      bb_current->instructions.push_back(InstCut{});
+      bb_current->instructions.push_back(InstEmit{Inst.m_Operands[0].m_Index[0].m_RegIndex});
+      bb_current->instructions.push_back(InstCut{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     case D3D11_SB_OPCODE_CUT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstCut{});
+      bb_current->instructions.push_back(InstCut{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     default:

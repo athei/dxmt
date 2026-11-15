@@ -358,9 +358,10 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     std::vector<MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC> buffer(NumEntries * 4);
     std::array<uint32_t, 4> strides = {{}};
     uint32_t num_metal_so_elements;
+    MTL_STREAM_OUTPUT_DESC desc = {};
     if (FAILED(ExtractMTLStreamOutputElements(
             device, pShaderBytecode, BytecodeLength, NumEntries, pEntries, buffer.data(),
-            &num_metal_so_elements))) {
+            &num_metal_so_elements, pGeometryShader ? desc.SlotStreams : nullptr))) {
       return E_FAIL;
     }
     buffer.resize(num_metal_so_elements);
@@ -375,7 +376,6 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
         strides[pEntries[i].OutputSlot] += sizeof(float) * pEntries[i].ComponentCount;
       }
     }
-    MTL_STREAM_OUTPUT_DESC desc;
     memcpy(desc.Strides, strides.data(), sizeof(strides));
     desc.Elements = std::move(buffer);
     desc.RasterizedStream = RasterizedStream;

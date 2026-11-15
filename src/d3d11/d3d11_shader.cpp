@@ -455,10 +455,13 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     stream_output.next = common;
     stream_output.pass = variant.stream_output_pass;
     stream_output.rasterized = variant.rasterized;
-    if (so_layout)
+    if (so_layout) {
       stream_output.num_elements = so_layout->GetStreamOutputElements(
           (MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC **)&stream_output.elements, stream_output.strides
       );
+      stream_output.streams = so_layout->GetSlotStreams(stream_output.slot_streams);
+      stream_output.rasterized_stream = so_layout->RasterizedStream();
+    }
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA geometry;
     geometry.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
     geometry.next = so_layout ? (void *)&stream_output : (void *)common;

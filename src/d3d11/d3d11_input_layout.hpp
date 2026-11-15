@@ -43,6 +43,9 @@ DEFINE_COM_INTERFACE("fd58f76b-7c22-4605-b43c-28048c8b4a64",
       uint32_t Strides[4]) = 0;
   virtual dxmt::Sha1Digest &Digest() = 0;
   virtual UINT RasterizedStream() = 0;
+  /* The streams the declaration writes, from 0 on, and the stream of each
+     slot */
+  virtual uint32_t GetSlotStreams(uint32_t SlotStreams[4]) = 0;
 };
 
 namespace dxmt {
@@ -66,11 +69,14 @@ HRESULT ValidateStreamOutputDeclaration(
     const UINT *pStrides, UINT NumStrides, UINT RasterizedStream, D3D_FEATURE_LEVEL FeatureLevel
 );
 
+/* pSlotStreams, for a geometry shader, gets the stream of each slot the
+   declaration writes; without it the entries of streams other than 0 are
+   left out */
 HRESULT ExtractMTLStreamOutputElements(
     MTLD3D11Device *pDevice, const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries,
     const D3D11_SO_DECLARATION_ENTRY *pEntries,
     MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *pStreamOut,
-    uint32_t *pNumElementsOut);
+    uint32_t *pNumElementsOut, uint32_t *pSlotStreams);
 
 } // namespace dxmt
 
@@ -83,6 +89,8 @@ struct MTL_STREAM_OUTPUT_DESC {
   /* The geometry shader whose output is streamed out, or null to stream out
      the vertex shader's */
   dxmt::Shader *GeometryShader;
+  /* The stream each slot takes */
+  uint32_t SlotStreams[4];
 };
 
 namespace std {
@@ -118,6 +126,8 @@ template <> struct hash<MTL_STREAM_OUTPUT_DESC> {
     state.add(v.Strides[2]);
     state.add(v.Strides[3]);
     state.add((size_t)v.GeometryShader);
+    for (auto stream : v.SlotStreams)
+      state.add(stream);
     for (auto &element : v.Elements) {
       state.add(std::hash<string_view>{}(
           {reinterpret_cast<const char *>(&element), sizeof(element)}));
@@ -132,6 +142,7 @@ template <> struct equal_to<MTL_STREAM_OUTPUT_DESC> {
     auto binsize =
         x.Elements.size() * sizeof(MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC);
     return x.RasterizedStream == y.RasterizedStream && x.GeometryShader == y.GeometryShader &&
+           !memcmp(x.SlotStreams, y.SlotStreams, sizeof(x.SlotStreams)) &&
            x.Strides[0] == y.Strides[0] && x.Strides[1] == y.Strides[1] &&
            x.Strides[2] == y.Strides[2] && x.Strides[3] == y.Strides[3] && x.Elements.size() == y.Elements.size() &&
            (std::string_view({reinterpret_cast<const char *>(x.Elements.data()), binsize}) ==

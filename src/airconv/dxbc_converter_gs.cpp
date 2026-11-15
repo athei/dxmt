@@ -350,14 +350,14 @@ convert_dxbc_geometry_shader(
   GeometryStreamOutput stream_output_state = {};
   if (stream_output) {
     resource_map.call_emit = [&, emit = std::move(resource_map.call_emit)]() {
-      if (build_mesh)
+      if (build_mesh && resource_map.emit_stream == stream_output->rasterized_stream)
         emit();
-      io.EmitGeometryStreamOutput(stream_output_state);
+      io.EmitGeometryStreamOutput(stream_output_state, resource_map.emit_stream);
     };
     resource_map.call_cut = [&, cut = std::move(resource_map.call_cut)]() {
-      if (build_mesh)
+      if (build_mesh && resource_map.emit_stream == stream_output->rasterized_stream)
         cut();
-      io.CutGeometryStreamOutput(stream_output_state);
+      io.CutGeometryStreamOutput(stream_output_state, resource_map.emit_stream);
     };
   }
 
@@ -556,6 +556,8 @@ convert_dxbc_geometry_shader(
   if (auto err = epilogue_result.takeError()) {
     return err;
   }
+  if (stream_output)
+    resource_map.emit_stream = stream_output->rasterized_stream;
   resource_map.call_cut();
   if (stream_output)
     io.FinishGeometryStreamOutput(stream_output_state);

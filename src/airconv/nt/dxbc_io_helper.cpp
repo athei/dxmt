@@ -582,45 +582,57 @@ IOHelper::InitializeGeometryStreamOutput(
                        record_type->getPointerTo((uint32_t)air::AddressSpace::constant)
                    )
   );
-  state.index = index;
-  state.strip_vertices = ir.CreateAlloca(types._int);
-  ir.CreateStore(ir.getInt32(0), state.strip_vertices);
-  state.primitives = ir.CreateAlloca(types._int);
-  ir.CreateStore(ir.getInt32(0), state.primitives);
-  if (data->pass == SM50_GEOMETRY_STREAM_OUTPUT_WRITE) {
-    auto counts = ir.CreateExtractValue(state.record, {1});
-    state.count = ir.CreateLoad(types._int, ir.CreateGEP(types._int, counts, {index}));
-    auto firsts = ir.CreateExtractValue(state.record, {2});
-    state.first = ir.CreateLoad(types._int, ir.CreateGEP(types._int, firsts, {index}));
-    state.previous = ir.CreateAlloca(llvm::ArrayType::get(types._int, 2 * std::max(data->num_elements, 1u)));
+  // The counts of a threadgroup are those of each stream, one after another
+  state.index = ir.CreateMul(index, ir.getInt32(std::max(data->streams, 1u)));
+  for (unsigned stream = 0; stream < data->streams && stream < 4; stream++) {
+    auto &s = state.streams[stream];
+    s.strip_vertices = ir.CreateAlloca(types._int);
+    ir.CreateStore(ir.getInt32(0), s.strip_vertices);
+    s.primitives = ir.CreateAlloca(types._int);
+    ir.CreateStore(ir.getInt32(0), s.primitives);
+    if (data->pass == SM50_GEOMETRY_STREAM_OUTPUT_WRITE) {
+      auto at = ir.CreateAdd(state.index, ir.getInt32(stream));
+      auto counts = ir.CreateExtractValue(state.record, {1});
+      s.count = ir.CreateLoad(types._int, ir.CreateGEP(types._int, counts, {at}));
+      auto firsts = ir.CreateExtractValue(state.record, {2});
+      s.first = ir.CreateLoad(types._int, ir.CreateGEP(types._int, firsts, {at}));
+      s.previous = ir.CreateAlloca(llvm::ArrayType::get(types._int, 2 * std::max(data->num_elements, 1u)));
+    }
   }
   return state;
 }
 
 void
-IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
+IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state, uint32_t stream) {
   auto data = state.data;
+  // A stream the declaration does not write emits nothing it counts
+  if (stream >= data->streams || stream >= 4)
+    return;
+  auto &s = state.streams[stream];
   auto vertices = state.vertices_per_primitive;
-  auto strip_vertices = ir.CreateLoad(types._int, state.strip_vertices);
-  ir.CreateStore(ir.CreateAdd(strip_vertices, ir.getInt32(1)), state.strip_vertices);
+  auto strip_vertices = ir.CreateLoad(types._int, s.strip_vertices);
+  ir.CreateStore(ir.CreateAdd(strip_vertices, ir.getInt32(1)), s.strip_vertices);
   llvm::Value *complete = ir.getTrue();
   if (vertices > 1)
     complete = ir.CreateICmpUGE(strip_vertices, ir.getInt32(vertices - 1));
-  auto primitive = ir.CreateLoad(types._int, state.primitives);
-  ir.CreateStore(ir.CreateAdd(primitive, ir.CreateZExt(complete, types._int)), state.primitives);
+  auto primitive = ir.CreateLoad(types._int, s.primitives);
+  ir.CreateStore(ir.CreateAdd(primitive, ir.CreateZExt(complete, types._int)), s.primitives);
   if (data->pass != SM50_GEOMETRY_STREAM_OUTPUT_WRITE)
     return;
 
+  auto in_stream = [&](const SM50_STREAM_OUTPUT_ELEMENT &element) {
+    return element.reg_id != 0xffffffff && element.output_slot < 4 && data->slot_streams[element.output_slot] == stream;
+  };
   auto output_regs = ir.CreateBitOrPointerCast(io.output.ptr_int4, llvm::PointerType::get(types._int, 0));
-  auto previous_type = state.previous->getType()->getNonOpaquePointerElementType();
+  auto previous_type = s.previous->getType()->getNonOpaquePointerElementType();
   auto previous_at = [&](unsigned vertex, unsigned element) {
-    return ir.CreateConstInBoundsGEP2_32(previous_type, state.previous, 0, vertex * data->num_elements + element);
+    return ir.CreateConstInBoundsGEP2_32(previous_type, s.previous, 0, vertex * data->num_elements + element);
   };
   std::vector<llvm::Value *> current(data->num_elements);
   for (unsigned i = 0; i < data->num_elements; i++) {
     auto &element = data->elements[i];
     current[i] = ir.getInt32(0);
-    if (element.reg_id < io.output_element_count && element.component < 4)
+    if (in_stream(element) && element.reg_id < io.output_element_count && element.component < 4)
       current[i] = ir.CreateLoad(
           types._int, ir.CreateConstGEP1_32(types._int, output_regs, element.reg_id * 4 + element.component)
       );
@@ -630,13 +642,13 @@ IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
   // {n, n + 1 + (n & 1), n + 2 - (n & 1)}, as the vertex path writes it. A
   // pass that emits more than the count pass counted, as one with side
   // effects can, keeps to the room the count gave it.
-  auto position = ir.CreateAdd(state.first, primitive);
-  auto limit = ir.CreateExtractValue(state.record, {3});
+  auto position = ir.CreateAdd(s.first, primitive);
+  auto limit = ir.CreateExtractValue(state.record, {3, stream});
   auto write = llvm::BasicBlock::Create(ir.getContext(), "stream_output_write", function);
   auto done = llvm::BasicBlock::Create(ir.getContext(), "stream_output_done", function);
   ir.CreateCondBr(
       ir.CreateAnd(
-          complete, ir.CreateAnd(ir.CreateICmpULT(position, limit), ir.CreateICmpULT(primitive, state.count))
+          complete, ir.CreateAnd(ir.CreateICmpULT(position, limit), ir.CreateICmpULT(primitive, s.count))
       ),
       write, done
   );
@@ -646,7 +658,7 @@ IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
   for (unsigned v = 0; v < vertices; v++) {
     for (unsigned i = 0; i < data->num_elements; i++) {
       auto &element = data->elements[i];
-      if (element.reg_id == 0xffffffff || element.output_slot >= 4)
+      if (!in_stream(element))
         continue;
       llvm::Value *value = current[i];
       if (vertices == 2 && v == 0) {
@@ -670,6 +682,8 @@ IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
   ir.SetInsertPoint(done);
 
   for (unsigned i = 0; i < data->num_elements && vertices > 1; i++) {
+    if (!in_stream(data->elements[i]))
+      continue;
     if (vertices == 3)
       ir.CreateStore(ir.CreateLoad(types._int, previous_at(1, i)), previous_at(0, i));
     ir.CreateStore(current[i], previous_at(1, i));
@@ -677,8 +691,9 @@ IOHelper::EmitGeometryStreamOutput(GeometryStreamOutput &state) {
 }
 
 void
-IOHelper::CutGeometryStreamOutput(GeometryStreamOutput &state) {
-  ir.CreateStore(ir.getInt32(0), state.strip_vertices);
+IOHelper::CutGeometryStreamOutput(GeometryStreamOutput &state, uint32_t stream) {
+  if (stream < state.data->streams && stream < 4)
+    ir.CreateStore(ir.getInt32(0), state.streams[stream].strip_vertices);
 }
 
 void
@@ -686,7 +701,11 @@ IOHelper::FinishGeometryStreamOutput(GeometryStreamOutput &state) {
   if (state.data->pass != SM50_GEOMETRY_STREAM_OUTPUT_COUNT)
     return;
   auto counts = ir.CreateExtractValue(state.record, {1});
-  ir.CreateStore(ir.CreateLoad(types._int, state.primitives), ir.CreateGEP(types._int, counts, {state.index}));
+  for (unsigned stream = 0; stream < state.data->streams && stream < 4; stream++)
+    ir.CreateStore(
+        ir.CreateLoad(types._int, state.streams[stream].primitives),
+        ir.CreateGEP(types._int, counts, {ir.CreateAdd(state.index, ir.getInt32(stream))})
+    );
 }
 
 void

@@ -272,8 +272,13 @@ struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA {
   uint32_t num_elements;
   uint32_t strides[4];
   struct SM50_STREAM_OUTPUT_ELEMENT *elements;
-  /* the write pass also builds the mesh of the stream */
+  /* the write pass also builds the mesh of rasterized_stream */
   uint32_t rasterized;
+  uint32_t rasterized_stream;
+  /* the streams the declaration writes, from 0 on, and the stream of each
+     slot it writes */
+  uint32_t streams;
+  uint32_t slot_streams[4];
 };
 
 enum SM50_SHADER_METAL_VERSION {

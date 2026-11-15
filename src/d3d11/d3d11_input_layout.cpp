@@ -110,7 +110,10 @@ public:
     h.update(desc.Elements.size());
     for (auto &el : desc.Elements) {
         h.update(el);
+        streams_ = std::max(streams_, desc.SlotStreams[el.OutputSlot] + 1);
     }
+    if (streams_ > 1)
+      h.update(desc.SlotStreams);
     sha1_ = h.final();
   }
 
@@ -165,9 +168,15 @@ public:
     return desc_.RasterizedStream;
   }
 
+  uint32_t GetSlotStreams(uint32_t SlotStreams[4]) override {
+    memcpy(SlotStreams, desc_.SlotStreams, sizeof(desc_.SlotStreams));
+    return streams_;
+  }
+
 private:
   MTL_STREAM_OUTPUT_DESC desc_;
   Sha1Digest sha1_;
+  uint32_t streams_ = 1;
 
   class NullGeometryShader : public IMTLD3D11Shader {
     MTLD3D11StreamOutputLayout *container;
@@ -221,6 +230,12 @@ ValidateStreamOutputDeclaration(
       return E_INVALIDARG;
     if (entry.OutputSlot >= D3D11_SO_BUFFER_SLOT_COUNT)
       return E_INVALIDARG;
+    // A buffer takes the data of one stream (14.1 of the D3D11.3 functional
+    // specification)
+    for (unsigned j = 0; j < i; j++) {
+      if (pEntries[j].OutputSlot == entry.OutputSlot && pEntries[j].Stream != entry.Stream)
+        return E_INVALIDARG;
+    }
     if (!entry.SemanticName) {
       if (entry.SemanticIndex || entry.StartComponent || !entry.ComponentCount)
         return E_INVALIDARG;
@@ -289,29 +304,30 @@ HRESULT ExtractMTLStreamOutputElements(
     MTLD3D11Device *pDevice, const void *pShaderBytecode, SIZE_T BytecodeLength, UINT NumEntries,
     const D3D11_SO_DECLARATION_ENTRY *pEntries,
     MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *pStreamOut,
-    uint32_t *pNumElementsOut) {
+    uint32_t *pNumElementsOut, uint32_t *pSlotStreams) {
   using namespace microsoft;
   std::array<uint32_t, 4> offsets = {{}};
   uint32_t element_count = 0;
-  CSignatureParser parser;
+  CSignatureParser5 parser;
   HRESULT hr = DXBCGetOutputSignature(pShaderBytecode, BytecodeLength, &parser);
   if (FAILED(hr)) {
     return hr;
   }
-  const D3D11_SIGNATURE_PARAMETER *pParameters;
-  auto numParameters = parser.GetParameters(&pParameters);
   for (unsigned i = 0; i < NumEntries; i++) {
     auto entry = pEntries[i];
-    if (entry.Stream != 0) {
-      WARN("CreateEmulatedVertexStreamOutputShader: only stream 0 supported");
+    if (entry.OutputSlot >= D3D11_SO_BUFFER_SLOT_COUNT || entry.Stream >= D3D11_SO_STREAM_COUNT)
       return E_INVALIDARG;
-    }
-    if (entry.OutputSlot >= D3D11_SO_BUFFER_SLOT_COUNT)
-      return E_INVALIDARG;
+    // A vertex shader writes stream 0 alone
+    if (!pSlotStreams && entry.Stream != 0)
+      continue;
+    if (pSlotStreams)
+      pSlotStreams[entry.OutputSlot] = entry.Stream;
     if (entry.SemanticName == nullptr) {
       offsets[entry.OutputSlot] += sizeof(float) * entry.ComponentCount;
       continue;
     }
+    const D3D11_SIGNATURE_PARAMETER *pParameters;
+    auto numParameters = parser.Signature(entry.Stream)->GetParameters(&pParameters);
     auto pDesc = std::find_if(
         pParameters, pParameters + numParameters,
         [&](const D3D11_SIGNATURE_PARAMETER &Ele) {

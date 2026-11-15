@@ -198,6 +198,8 @@ struct io_binding_map {
   llvm::Value *mesh = nullptr;
   std::function<void()> call_emit;
   std::function<void()> call_cut;
+  /* the stream of the emit or cut being converted */
+  uint32_t emit_stream = 0;
 };
 
 struct context {

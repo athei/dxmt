@@ -662,8 +662,7 @@ struct DXMTGeometryStreamOutputRecord {
   ulong buffer_handle[4];
   device uint* counts;
   device uint* firsts;
-  uint limit;
-  uint reserved;
+  uint limit[4];
 };
 
 struct DXMTGeometryStreamOutputTask {
@@ -679,6 +678,8 @@ struct DXMTGeometryStreamOutputTask {
   uint threadgroups;
   uint mesh_threadgroups;
   uint vertices_per_primitive;
+  uint streams;
+  uint slot_streams[4];
   uint unbound;
   uint block_count;
 };
@@ -694,8 +695,8 @@ so_geometry_count(constant DXMTGeometryStreamOutputTask& task) {
   return threadgroups * task.mesh_threadgroups;
 }
 
-// Of a draw whose counts take more than one block: the sum of block
-// vertex_id, into blocks[2 * vertex_id]
+// Of a draw whose counts take more than one block: the sums of block
+// vertex_id, one for each stream, into blocks[8 * vertex_id + stream]
 [[vertex]] void so_geometry_block_sums(
     constant DXMTGeometryStreamOutputTask& task [[buffer(kCustomBufferArgumentIndex0)]],
     uint vertex_id [[vertex_id]]
@@ -703,14 +704,18 @@ so_geometry_count(constant DXMTGeometryStreamOutputTask& task) {
   ulong count = so_geometry_count(task);
   ulong begin = (ulong)vertex_id * kGeometryStreamOutputBlock;
   ulong end = begin + kGeometryStreamOutputBlock < count ? begin + kGeometryStreamOutputBlock : count;
-  uint sum = 0;
-  for (ulong i = begin; i < end; i++)
-    sum += task.counts[i];
-  task.blocks[2 * vertex_id] = sum;
+  uint sums[4] = {0, 0, 0, 0};
+  for (ulong i = begin; i < end; i++) {
+    for (uint stream = 0; stream < task.streams; stream++)
+      sums[stream] += task.counts[i * task.streams + stream];
+  }
+  for (uint stream = 0; stream < 4; stream++)
+    task.blocks[8 * vertex_id + stream] = sums[stream];
 }
 
 // Of a draw whose counts take more than one block: the positions of block
-// vertex_id from the position of its first, blocks[2 * vertex_id + 1]
+// vertex_id from the position of its first in each stream,
+// blocks[8 * vertex_id + 4 + stream]
 [[vertex]] void so_geometry_block_firsts(
     constant DXMTGeometryStreamOutputTask& task [[buffer(kCustomBufferArgumentIndex0)]],
     uint vertex_id [[vertex_id]]
@@ -718,50 +723,61 @@ so_geometry_count(constant DXMTGeometryStreamOutputTask& task) {
   ulong count = so_geometry_count(task);
   ulong begin = (ulong)vertex_id * kGeometryStreamOutputBlock;
   ulong end = begin + kGeometryStreamOutputBlock < count ? begin + kGeometryStreamOutputBlock : count;
-  uint first =task.blocks[2 * vertex_id + 1];
+  uint firsts[4];
+  for (uint stream = 0; stream < 4; stream++)
+    firsts[stream] = task.blocks[8 * vertex_id + 4 + stream];
   for (ulong i = begin; i < end; i++) {
-    task.firsts[i] = first;
-    first += task.counts[i];
+    for (uint stream = 0; stream < task.streams; stream++) {
+      task.firsts[i * task.streams + stream] = firsts[stream];
+      firsts[stream] += task.counts[i * task.streams + stream];
+    }
   }
 }
 
 // Between the two passes of a geometry shader that streams out: adds up what
-// the mesh threadgroups of the draw counted, in the order of the draw, into
-// the position of each one's first primitive, stops the stream at the room
-// of its slots, and writes what the write pass reads, the filled sizes after
-// the draw and the counters of stream 0. With more than one block it adds up
-// the sums of so_geometry_block_sums into the first positions of the blocks,
-// from which so_geometry_block_firsts writes the others. It reads nothing it
-// writes, so it may run more than once. An indirect draw with more object
-// threadgroups than the counts have room for has none, which it tells the
-// encoding thread.
+// the mesh threadgroups of the draw counted of each stream, in the order of
+// the draw, into the position of each one's first primitive, stops each
+// stream at the room of its slots, and writes what the write pass reads, the
+// filled sizes after the draw and the counters of the streams. With more than
+// one block it adds up the sums of so_geometry_block_sums into the first
+// positions of the blocks, from which so_geometry_block_firsts writes the
+// others. It reads nothing it writes, so it may run more than once. An
+// indirect draw with more object threadgroups than the counts have room for
+// has none, which it tells the encoding thread.
 [[vertex]] void so_geometry_prologue(
     constant DXMTGeometryStreamOutputTask& task [[buffer(kCustomBufferArgumentIndex0)]]
 ) {
   if (task.dispatch && !so_geometry_count(task) && task.arguments[0] && task.arguments[1])
     *task.omitted = 1;
-  ulong needed = 0;
+  ulong needed[4] = {0, 0, 0, 0};
   if (task.block_count > 1) {
     for (uint block = 0; block < task.block_count; block++) {
-      task.blocks[2 * block + 1] = (uint)needed;
-      needed += task.blocks[2 * block];
+      for (uint stream = 0; stream < task.streams; stream++) {
+        task.blocks[8 * block + 4 + stream] = (uint)needed[stream];
+        needed[stream] += task.blocks[8 * block + stream];
+      }
     }
   } else {
     ulong count = so_geometry_count(task);
     for (ulong i = 0; i < count; i++) {
-      task.firsts[i] = (uint)needed;
-      needed += task.counts[i];
+      for (uint stream = 0; stream < task.streams; stream++) {
+        task.firsts[i * task.streams + stream] = (uint)needed[stream];
+        needed[stream] += task.counts[i * task.streams + stream];
+      }
     }
   }
-  ulong written = task.unbound ? 0 : needed;
+  ulong written[4];
+  for (uint stream = 0; stream < 4; stream++)
+    written[stream] = (task.unbound & (1u << stream)) ? 0 : needed[stream];
   for (uint slot = 0; slot < 4; slot++) {
     if (!task.slots[slot].filled)
       continue;
+    uint stream = task.slot_streams[slot];
     uint filled = *task.slots[slot].filled;
     ulong available = task.slots[slot].size > filled ? task.slots[slot].size - filled : 0;
     ulong room = available / ((ulong)task.slots[slot].stride * task.vertices_per_primitive);
-    if (room < written)
-      written = room;
+    if (room < written[stream])
+      written[stream] = room;
   }
 
   device DXMTGeometryStreamOutputRecord& record = *task.record_out;
@@ -772,18 +788,18 @@ so_geometry_count(constant DXMTGeometryStreamOutputTask& task) {
     }
     uint filled = *task.slots[slot].filled;
     record.buffer_handle[slot] = task.slots[slot].buffer + filled;
-    *task.slots[slot].filled_out = filled + (uint)(written * task.vertices_per_primitive * task.slots[slot].stride);
+    *task.slots[slot].filled_out =
+        filled + (uint)(written[task.slot_streams[slot]] * task.vertices_per_primitive * task.slots[slot].stride);
   }
-  record.limit = written > 0xffffffff ? 0xffffffff : (uint)written;
+  for (uint stream = 0; stream < 4; stream++)
+    record.limit[stream] = written[stream] > 0xffffffff ? 0xffffffff : (uint)written[stream];
   record.counts = (device uint*)task.counts;
   record.firsts = task.firsts;
 
   if (task.counters_out) {
-    task.counters_out[0].written = written;
-    task.counters_out[0].needed = needed;
-    for (uint stream = 1; stream < 4; stream++) {
-      task.counters_out[stream].written = 0;
-      task.counters_out[stream].needed = 0;
+    for (uint stream = 0; stream < 4; stream++) {
+      task.counters_out[stream].written = written[stream];
+      task.counters_out[stream].needed = needed[stream];
     }
   }
 }

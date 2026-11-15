@@ -81,8 +81,7 @@ AirType::AirType(LLVMContext &context) : context(context) {
       ArrayType::get(_int->getPointerTo((uint32_t)AddressSpace::device), 4), // output slots
       _int->getPointerTo((uint32_t)AddressSpace::device), // counts
       _int->getPointerTo((uint32_t)AddressSpace::device), // first primitives
-      _int, // primitive limit
-      _int, // reserved
+      ArrayType::get(_int, 4), // primitive limit of each stream
     },
     "dxmt_geometry_stream_output"
   );

@@ -23,17 +23,20 @@ struct GeometryStreamOutput {
   uint32_t vertices_per_primitive;
   /* the dxmt_geometry_stream_output */
   llvm::Value *record;
-  /* where the threadgroup's count is, in the order of the draw */
+  /* where the threadgroup's counts are, in the order of the draw */
   llvm::Value *index;
-  /* write pass: what the count pass counted, and the position of the
-     threadgroup's first primitive */
-  llvm::Value *count;
-  llvm::Value *first;
-  /* vertices emitted since the last cut, and primitives completed */
-  llvm::Value *strip_vertices;
-  llvm::Value *primitives;
-  /* write pass: the streamed out components of the two vertices before */
-  llvm::Value *previous;
+  /* each stream's: */
+  struct {
+    /* write pass: what the count pass counted, and the position of the
+       threadgroup's first primitive */
+    llvm::Value *count;
+    llvm::Value *first;
+    /* vertices emitted since the last cut, and primitives completed */
+    llvm::Value *strip_vertices;
+    llvm::Value *primitives;
+    /* write pass: the streamed out components of the two vertices before */
+    llvm::Value *previous;
+  } streams[4];
 };
 
 class IOHelper {
@@ -122,11 +125,11 @@ public:
       uint32_t VerticesPerPrimitive
   );
 
-  /* An emit of the stream: completes a primitive once the strip has enough
+  /* An emit of a stream: completes a primitive once the strip has enough
      vertices, which the write pass stores below the limit as a list */
-  void EmitGeometryStreamOutput(GeometryStreamOutput &State);
+  void EmitGeometryStreamOutput(GeometryStreamOutput &State, uint32_t Stream);
 
-  void CutGeometryStreamOutput(GeometryStreamOutput &State);
+  void CutGeometryStreamOutput(GeometryStreamOutput &State, uint32_t Stream);
 
   /* The end of the shader: the count pass stores its count */
   void FinishGeometryStreamOutput(GeometryStreamOutput &State);
