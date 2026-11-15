@@ -143,7 +143,9 @@ ArgumentEncodingContext::encodePreRasterBarrier() {
 }
 
 void
-ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset) {
+ArgumentEncodingContext::encodeStreamOutputFunction(
+    WMT::RenderPipelineState pso, uint64_t argument_offset, uint32_t points
+) {
   auto encoder = currentRenderEncoder();
   auto &set_pso = encodeRenderCommand<wmtcmd_render_setpso>();
   set_pso.type = WMTRenderCommandSetPSO;
@@ -157,7 +159,7 @@ ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso
   run.type = WMTRenderCommandDraw;
   run.primitive_type = WMTPrimitiveTypePoint;
   run.vertex_start = 0;
-  run.vertex_count = 1;
+  run.vertex_count = points;
   run.base_instance = 0;
   run.instance_count = 1;
   encodePreRasterBarrier();
@@ -166,6 +168,42 @@ ArgumentEncodingContext::encodeStreamOutputFunction(WMT::RenderPipelineState pso
     restore_pso.type = WMTRenderCommandSetPSO;
     restore_pso.pso = encoder->last_pso;
   }
+}
+
+void
+ArgumentEncodingContext::scanStripCuts(
+    STRIP_CUTS_TASK &task, uint64_t argument_offset, AllocatedTempBufferSlice &scratch
+) {
+  task.cuts = 0;
+  task.blocks = 0;
+  // An indirect draw takes at most the indices of the buffer
+  uint64_t indices = task.arguments ? task.index_limit : task.count;
+  uint64_t blocks = std::max<uint64_t>((indices + kStripCutsBlock - 1) / kStripCutsBlock, 1);
+  if (blocks > kStripCutsMaxBlocks) {
+    if (task.arguments) {
+      ERR_ONCE(
+          "An indirect draw of an indexed strip, whose index count only the GPU knows: its cuts are scanned up to ",
+          kStripCutsMaxBlocks * kStripCutsBlock, " indices; its index buffer holds ", indices
+      );
+    } else {
+      ERR_ONCE(
+          "A draw of ", indices, " indices of an indexed strip: its cuts are scanned up to ",
+          kStripCutsMaxBlocks * kStripCutsBlock, " indices"
+      );
+    }
+    blocks = kStripCutsMaxBlocks;
+  }
+  scratch = allocateTempBuffer1((4 + 4 * blocks) * sizeof(uint32_t), 16);
+  if (!scratch.gpu_buffer) {
+    ERR_ONCE("No scratch buffer for the cuts of an indexed strip");
+    return;
+  }
+  task.cuts = scratch.gpu_address + scratch.offset;
+  task.blocks = uint32_t(blocks);
+  makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
+      scratch.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
+  );
+  encodeStreamOutputFunction(emulated_cmd.stripCutsBlocks(), argument_offset, task.blocks);
 }
 
 uint64_t
@@ -260,6 +298,13 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
   auto vertex_encoder_id = encoder->encoder_id_vertex;
 
   bool on_gpu = gpu_arguments != 0;
+  // The cuts of an indexed strip, which the encoding thread does not read,
+  // decide what it writes. A strip of the topologies whose primitive adds one
+  // index: the indices of a primitive.
+  uint32_t strip_window =
+      draw.index_size && draw.topology_step == 1 && draw.topology_lead ? draw.topology_lead + 1 : 0;
+  if (strip_window)
+    on_gpu = true;
   bool unbound = false;
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
     if (!draw.strides[slot])
@@ -335,11 +380,28 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
     task->topology_step = draw.topology_step;
     task->vertices_per_primitive = draw.vertices_per_primitive;
     task->unbound = unbound;
+    task->rasterized = draw.rasterized;
     makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
         output.gpu_buffer, GetResidencyMask<PipelineKind::Ordinary>(PipelineStage::Vertex, true, true)
     );
 
     resolveRenderPassBarrier();
+    if (strip_window) {
+      auto &cuts = task->cuts;
+      cuts.arguments = gpu_arguments;
+      cuts.index_buffer = index_buffer;
+      cuts.index_limit = std::min<uint64_t>(index_buffer_size / draw.index_size, UINT32_MAX);
+      cuts.index_size = draw.index_size;
+      cuts.count = draw.count;
+      cuts.start = draw.start;
+      cuts.window = strip_window;
+      // so_draw_prologue scans a draw of one block alone, and with no scratch
+      // buffer the first block of a larger one
+      if (gpu_arguments || draw.count > kStripCutsBlock) {
+        AllocatedTempBufferSlice scratch;
+        scanStripCuts(cuts, argument_offset + offsetof(SO_DRAW_TASK, cuts), scratch);
+      }
+    }
     encodeStreamOutputFunction(emulated_cmd.streamOutputDrawPrologue(), argument_offset);
     bind_record(output.gpu_buffer, output.offset);
     auto &cmd = encodeRenderCommand<wmtcmd_render_draw_indirect>();
@@ -367,7 +429,7 @@ ArgumentEncodingContext::encodeStreamOutputDraw(
   so_counted_[0].needed += needed;
   so_counted_[0].written += written;
   // Without rasterization a draw that writes nothing does nothing
-  if (!written || vertex_count > UINT32_MAX)
+  if ((!written && !draw.rasterized) || !needed || vertex_count > UINT32_MAX)
     return;
 
   auto record = getMappedArgumentBuffer<SO_DRAW_RECORD>(argument_offset);

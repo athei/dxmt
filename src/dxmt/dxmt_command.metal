@@ -513,7 +513,131 @@ struct DXMTStreamOutputRecord {
   uint index_limit;
   uint index_size;
   uint reserved;
+  device const uint* strip_cuts;
 };
+
+// The structs and functions of the strip cut scan have the layout of
+// STRIP_CUTS_TASK in dxmt_context.hpp. The cut index of a strip ends the
+// strip, and the next one starts with a new primitive of even winding, so
+// where a primitive of an indexed strip starts and its place among the
+// primitives of the draw depend on every cut before it. The scan takes the
+// positions of the draw in blocks of kStripCutsBlock. For each block it
+// records the last cut and the primitives without a cut index, and then
+// carries both over the blocks, so that a function that needs them for a
+// primitive reads its block's carry and scans no further back than the
+// start of its block.
+struct DXMTStripCutsTask {
+  device const uint* arguments;
+  device const uchar* index_buffer;
+  device uint* cuts;
+  uint index_limit;
+  uint index_size;
+  uint count;
+  uint start;
+  uint window;
+  uint blocks;
+};
+
+constant uint kStripCutsBlock = 1024;
+
+static void
+strip_cuts_draw(constant DXMTStripCutsTask& task, thread uint& count, thread uint& start) {
+  count = task.arguments ? task.arguments[0] : task.count;
+  start = task.arguments ? task.arguments[2] : task.start;
+}
+
+// An index past the end of the index buffer is 0, not a cut
+static bool
+strip_cut_at(constant DXMTStripCutsTask& task, uint start, uint position) {
+  ulong index = (ulong)start + position;
+  if (index >= task.index_limit)
+    return false;
+  if (task.index_size == 2)
+    return ((device const ushort*)task.index_buffer)[index] == 0xffff;
+  return ((device const uint*)task.index_buffer)[index] == 0xffffffff;
+}
+
+// Of the primitives that start in [begin, end): those without a cut index,
+// and the last cut in [begin, end) plus 1, or 0
+static uint
+strip_cuts_scan(
+    constant DXMTStripCutsTask& task, uint count, uint start, uint begin, uint end, thread uint& last
+) {
+  uint valid = 0, run = 0;
+  ulong scan_end = (ulong)end + task.window - 1;
+  if (scan_end > count)
+    scan_end = count;
+  last = 0;
+  for (uint position = begin; position < scan_end; position++) {
+    bool cut = strip_cut_at(task, start, position);
+    run = cut ? 0 : run + 1;
+    if (cut && position < end)
+      last = position + 1;
+    if (run >= task.window)
+      valid++;
+  }
+  return valid;
+}
+
+// One point for each block: its last cut plus 1 and its primitives without a
+// cut into cuts[4 + 4 * vertex_id] and cuts[5 + 4 * vertex_id]
+[[vertex]] void strip_cuts_blocks(
+    constant DXMTStripCutsTask& task [[buffer(kCustomBufferArgumentIndex0)]],
+    uint vertex_id [[vertex_id]]
+) {
+  if (vertex_id >= task.blocks)
+    return;
+  uint count, start;
+  strip_cuts_draw(task, count, start);
+  ulong begin = (ulong)vertex_id * kStripCutsBlock;
+  ulong end = begin + kStripCutsBlock < count ? begin + kStripCutsBlock : count;
+  uint last = 0, valid = 0;
+  if (begin < count)
+    valid = strip_cuts_scan(task, count, start, (uint)begin, (uint)end, last);
+  task.cuts[4 + 4 * vertex_id] = last;
+  task.cuts[5 + 4 * vertex_id] = valid;
+}
+
+// Carries the blocks over: the last cut before each block plus 1 into
+// cuts[6 + 4 * block], the primitives without a cut before it into
+// cuts[7 + 4 * block], the blocks it carried into cuts[0] and the primitives
+// without a cut of the draw into cuts[1]. Returns the latter. A draw with
+// more blocks than the scratch buffer has room for and no cut in those it
+// carried counts every primitive after them and sets cuts[2]: the cuts
+// after them are not seen. It reads nothing it writes, so it may run more
+// than once.
+static ulong
+strip_cuts_carry(constant DXMTStripCutsTask& task, uint count) {
+  uint needed = (uint)(((ulong)count + kStripCutsBlock - 1) / kStripCutsBlock);
+  uint blocks = needed > task.blocks ? task.blocks : needed;
+  uint last = 0;
+  ulong valid = 0;
+  for (uint block = 0; block < blocks; block++) {
+    task.cuts[6 + 4 * block] = last;
+    task.cuts[7 + 4 * block] = (uint)valid;
+    uint block_last = task.cuts[4 + 4 * block];
+    if (block_last)
+      last = block_last;
+    valid += task.cuts[5 + 4 * block];
+  }
+  bool plain = blocks < needed && !last && valid == (ulong)blocks * kStripCutsBlock;
+  if (plain)
+    valid = (ulong)count - task.window + 1;
+  task.cuts[0] = blocks;
+  task.cuts[1] = valid > 0xffffffff ? 0xffffffff : (uint)valid;
+  task.cuts[2] = plain;
+  return valid;
+}
+
+// The primitives without a cut of a draw: with blocks from strip_cuts_blocks,
+// or of a draw of one block, which it scans here
+static ulong
+strip_cuts_valid(constant DXMTStripCutsTask& task, uint count, uint start) {
+  if (task.blocks)
+    return strip_cuts_carry(task, count);
+  uint last;
+  return strip_cuts_scan(task, count, start, 0, count < kStripCutsBlock ? count : kStripCutsBlock, last);
+}
 
 struct DXMTStreamOutputCounters {
   ulong written;
@@ -538,14 +662,18 @@ struct DXMTStreamOutputTask {
   uint topology_step;
   uint vertices_per_primitive;
   uint unbound;
-  uint reserved;
+  uint rasterized;
+  DXMTStripCutsTask cuts;
 };
 
 // Counts what a stream output draw writes when the encoding thread cannot:
-// the arguments of the draw or a filled size are only known here. Writes the
-// filled sizes after the draw, what the draw's vertex function reads, the
-// arguments of the draw and the counters of stream 0. It reads nothing it
-// writes, so it may run more than once.
+// the arguments of the draw, a filled size or the cuts of an indexed strip
+// are only known here. Writes the filled sizes after the draw, what the
+// draw's vertex function reads, the arguments of the draw and the counters
+// of stream 0. An indexed strip draws a primitive at each position, and the
+// vertex function leaves out those with a cut index; the others are written
+// one after another. It reads nothing it writes, so it may run more than
+// once.
 [[vertex]] void so_draw_prologue(
     constant DXMTStreamOutputTask& task [[buffer(kCustomBufferArgumentIndex0)]]
 ) {
@@ -566,8 +694,11 @@ struct DXMTStreamOutputTask {
     }
   }
 
-  ulong primitives = count > task.topology_lead ? (count - task.topology_lead) / task.topology_step : 0;
-  ulong vertex_count = primitives * task.vertices_per_primitive;
+  ulong positions = count > task.topology_lead ? (count - task.topology_lead) / task.topology_step : 0;
+  ulong vertex_count = positions * task.vertices_per_primitive;
+  ulong primitives = positions;
+  if (task.cuts.window && positions)
+    primitives = strip_cuts_valid(task.cuts, count, start);
   if (vertex_count > 0xfffffffful) {
     primitives = 0;
     vertex_count = 0;
@@ -596,10 +727,11 @@ struct DXMTStreamOutputTask {
   }
   ulong vertex_limit = written * task.vertices_per_primitive;
   record.vertex_limit = vertex_limit > 0xffffffff ? 0xffffffff : (uint)vertex_limit;
-  record.vertex_count = (uint)vertex_count;
+  record.vertex_count = (uint)(primitives * task.vertices_per_primitive);
   record.base_vertex = task.index_size ? base_vertex : (int)start;
   record.index_size = task.index_size;
   record.reserved = 0;
+  record.strip_cuts = task.cuts.window ? task.cuts.cuts : nullptr;
   ulong first_index = (ulong)start * task.index_size;
   if (task.index_size && first_index < task.index_buffer_size) {
     record.index_buffer = task.index_buffer + first_index;
@@ -609,8 +741,9 @@ struct DXMTStreamOutputTask {
     record.index_limit = 0;
   }
 
-  // MTLDrawPrimitivesIndirectArguments; nothing to draw when nothing is written
-  task.draw_arguments_out[0] = written ? (uint)vertex_count : 0;
+  // MTLDrawPrimitivesIndirectArguments; without rasterization nothing to draw
+  // when nothing is written
+  task.draw_arguments_out[0] = written || task.rasterized ? (uint)vertex_count : 0;
   task.draw_arguments_out[1] = instance_count;
   task.draw_arguments_out[2] = 0;
   task.draw_arguments_out[3] = start_instance;

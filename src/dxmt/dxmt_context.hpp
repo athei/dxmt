@@ -128,6 +128,47 @@ struct SO_DRAW_RECORD {
   /* 0 without indices, or 2 or 4 */
   uint32_t index_size;
   uint32_t reserved;
+  /* the cuts of STRIP_CUTS_TASK of an indexed strip the scan took in
+     blocks, or 0 */
+  uint64_t strip_cuts;
+};
+
+/* The positions of an indexed strip draw whose cut indices one function of
+   the strip cut scan takes in one thread; dxmt_command.metal has the same */
+constexpr uint32_t kStripCutsBlock = 1024;
+
+/* The blocks the scan takes: one GPU thread carries them over, and its time
+   grows with their number. The emulated stream output numbers the primitives
+   past them plainly when the scan saw no cut, and leaves them out otherwise. */
+constexpr uint32_t kStripCutsMaxBlocks = 2048;
+
+/* What a draw of an indexed strip passes to the vertex functions of the strip
+   cut scan (dxmt_command.metal), which have the same struct. The scratch
+   buffer at cuts holds 4 words, the blocks the scan carried, the primitives
+   without a cut index of the draw, 1 when the scan saw no cut in a draw with
+   more blocks than it carried, and one unused; then 4 words for each
+   block: its last cut plus 1, its primitives without a cut, the last cut
+   before it plus 1 and the primitives without a cut before it. A last cut
+   of 0 is none. */
+struct STRIP_CUTS_TASK {
+  /* the arguments of an indirect draw, or 0 for count and start */
+  uint64_t arguments;
+  /* index 0, at the offset of IASetIndexBuffer */
+  uint64_t index_buffer;
+  /* the scratch buffer, or 0 for a draw of one block, which so_draw_prologue
+     scans alone */
+  uint64_t cuts;
+  /* indices that can be read at index_buffer */
+  uint32_t index_limit;
+  /* 2 or 4 */
+  uint32_t index_size;
+  uint32_t count;
+  uint32_t start;
+  /* the indices of a primitive of the strip: 2 for a line strip, 3 for a
+     triangle strip, 4 for a line strip with adjacency */
+  uint32_t window;
+  /* the blocks the scratch buffer has room for */
+  uint32_t blocks;
 };
 
 /* What a draw passes to the vertex function so_draw_prologue (dxmt_command.metal),
@@ -165,7 +206,10 @@ struct SO_DRAW_TASK {
   uint32_t vertices_per_primitive;
   /* the declaration writes a slot that has no target */
   uint32_t unbound;
-  uint32_t reserved;
+  /* StreamOutputDraw::rasterized */
+  uint32_t rasterized;
+  /* of an indexed strip, the scan of its cuts; window 0 for other draws */
+  STRIP_CUTS_TASK cuts;
 };
 
 /* What a DrawAuto passes to the vertex function so_draw_auto, which writes
@@ -179,9 +223,10 @@ struct SO_DRAW_AUTO_TASK {
 
 /* Bytes of the encoder's argument buffer a stream output draw takes: its
    SO_DRAW_RECORD or SO_DRAW_TASK, then the SO_DRAW_AUTO_TASK of a DrawAuto */
-constexpr size_t kStreamOutputDrawTaskOffset = 224;
-constexpr size_t kStreamOutputDrawArgumentSize = 256;
+constexpr size_t kStreamOutputDrawTaskOffset = 272;
+constexpr size_t kStreamOutputDrawArgumentSize = 304;
 static_assert(sizeof(SO_DRAW_TASK) <= kStreamOutputDrawTaskOffset);
+static_assert(sizeof(SO_DRAW_RECORD) <= kStreamOutputDrawTaskOffset);
 static_assert(kStreamOutputDrawTaskOffset + sizeof(SO_DRAW_AUTO_TASK) <= kStreamOutputDrawArgumentSize);
 
 /* A draw through the emulated stream output */
@@ -198,6 +243,9 @@ struct StreamOutputDraw {
   uint8_t index_size;
   /* The list primitive the draw is encoded with */
   WMTPrimitiveType primitive_type;
+  /* The pipeline rasterizes the draw, so it runs also when nothing is
+     written */
+  bool rasterized;
   /* The offset of IASetIndexBuffer */
   uint32_t index_buffer_offset;
   /* The arguments of the D3D11 draw. An indirect draw and DrawAuto leave
@@ -1026,11 +1074,15 @@ private:
   void encodeStreamOutputDraw(const StreamOutputDraw &draw, uint64_t argument_offset, uint64_t gpu_arguments);
   /* The address of the filled size of a buffer whose filled size is on the GPU */
   uint64_t streamOutputFilledAddress(Buffer *buffer);
-  /* Encodes the draw of one point that runs a function of
-     dxmt_command.metal with the task at argument_offset, and the barrier
-     that lets the commands after it read what the function wrote */
-  void encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset);
+  /* Encodes the draw of one point, or of points vertices, that runs a
+     function of dxmt_command.metal with the task at argument_offset, and the
+     barrier that lets the commands after it read what the function wrote */
+  void encodeStreamOutputFunction(WMT::RenderPipelineState pso, uint64_t argument_offset, uint32_t points = 1);
   void encodePreRasterBarrier();
+  /* Allocates the scratch buffer of task, whose other fields are set, and
+     encodes strip_cuts_blocks with the task at argument_offset. Leaves cuts
+     and blocks 0 when there is no scratch buffer. */
+  void scanStripCuts(STRIP_CUTS_TASK &task, uint64_t argument_offset, AllocatedTempBufferSlice &scratch);
 
   /* The counters of the draws whose output the encoding thread knows */
   StreamOutputCounterSet so_counted_{};

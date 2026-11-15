@@ -379,8 +379,23 @@ IOHelper::PopulateOutputSanitizePosition(
     uint32_t from_reg, uint32_t mask, llvm::Value *StructRet, uint32_t to_element
 ) {
   auto fvec4 = LoadFromArrayAt(io.output.ptr_float4, air.getInt(from_reg));
-  auto fixed = air.SanitizePosition(fvec4);
+  llvm::Value *fixed = air.SanitizePosition(fvec4);
+  // Outside the clip volume, as PopulateOutputClippedPosition
+  if (io.stream_output_discard)
+    fixed = ir.CreateSelect(
+        io.stream_output_discard,
+        llvm::ConstantVector::get({air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(-1.0f)}),
+        fixed
+    );
   return ir.CreateInsertValue(StructRet, fixed, {to_element});
+}
+
+llvm::Value *
+IOHelper::PopulateOutputClippedPosition(llvm::Value *StructRet, uint32_t to_element) {
+  auto position = llvm::ConstantVector::get(
+      {air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(0.0f), air.getFloat(-1.0f)}
+  );
+  return ir.CreateInsertValue(StructRet, position, {to_element});
 }
 
 llvm::Value *
@@ -469,6 +484,29 @@ IOHelper::InitializeStreamOutputVertex(
     break;
   }
 
+  // The output vertex of the instance the vertex is written at
+  llvm::Value *written_vertex = output_vertex;
+  // A strip whose primitive adds one index: the indices of a primitive, and
+  // the output vertices of one
+  uint32_t window = 0, vertices = 0;
+  switch (vertex_so->topology) {
+  case SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP:
+    window = 2, vertices = 2;
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP:
+    window = 3, vertices = 3;
+    break;
+  case SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ:
+    window = 4, vertices = 2;
+    break;
+  default:
+    break;
+  }
+  if (window) {
+    std::tie(element, written_vertex, io.stream_output_discard) =
+        InitializeStreamOutputStripCuts(draw, output_vertex, element, window, vertices);
+  }
+
   // The draw tells whether it has indices and their size, so one function
   // serves the indexed and the other draws of a pipeline. An index past the
   // end of the index buffer is 0.
@@ -504,6 +542,10 @@ IOHelper::InitializeStreamOutputVertex(
     vertex_id->addIncoming(index16, load_index16);
     vertex_id->addIncoming(index32, load_index32);
     io.vertex_id = vertex_id;
+    // The vertices of a primitive left out take vertex 0, not the cut index,
+    // which lies past the vertices
+    if (io.stream_output_discard)
+      io.vertex_id = ir.CreateSelect(io.stream_output_discard, ir.getInt32(0), vertex_id);
   }
   io.base_vertex_id = ir.CreateExtractValue(draw, {4});
   io.vertex_id_with_base = ir.CreateAdd(io.vertex_id, io.base_vertex_id);
@@ -511,9 +553,176 @@ IOHelper::InitializeStreamOutputVertex(
   // The instances follow each other in the output
   auto position = ir.CreateAdd(
       ir.CreateMul(ir.CreateZExt(io.instance_id, types._long), ir.CreateZExt(ir.CreateExtractValue(draw, {3}), types._long)),
-      ir.CreateZExt(output_vertex, types._long)
+      ir.CreateZExt(written_vertex, types._long)
   );
   return {draw, position};
+}
+
+std::tuple<llvm::Value *, llvm::Value *, llvm::Value *>
+IOHelper::InitializeStreamOutputStripCuts(
+    llvm::Value *draw, llvm::Value *output_vertex, llvm::Value *element, uint32_t window, uint32_t vertices
+) {
+  auto &context = ir.getContext();
+  auto const zero = ir.getInt32(0);
+  auto const one = ir.getInt32(1);
+  auto index_size = ir.CreateExtractValue(draw, {6});
+  auto before = ir.GetInsertBlock();
+  auto scan = llvm::BasicBlock::Create(context, "strip_cuts", function);
+  auto carry = llvm::BasicBlock::Create(context, "strip_cuts_carry", function);
+  auto carry_blocks = llvm::BasicBlock::Create(context, "strip_cuts_carry_blocks", function);
+  auto carry_read = llvm::BasicBlock::Create(context, "strip_cuts_carry_read", function);
+  auto carried = llvm::BasicBlock::Create(context, "strip_cuts_carried", function);
+  auto loop = llvm::BasicBlock::Create(context, "strip_cuts_loop", function);
+  auto body = llvm::BasicBlock::Create(context, "strip_cuts_body", function);
+  auto load = llvm::BasicBlock::Create(context, "strip_cuts_load", function);
+  auto load16 = llvm::BasicBlock::Create(context, "strip_cuts_load16", function);
+  auto load32 = llvm::BasicBlock::Create(context, "strip_cuts_load32", function);
+  auto next = llvm::BasicBlock::Create(context, "strip_cuts_next", function);
+  auto done = llvm::BasicBlock::Create(context, "strip_cuts_done", function);
+  auto after = llvm::BasicBlock::Create(context, "strip_cuts_after", function);
+  // Without indices there is no cut
+  ir.CreateCondBr(ir.CreateICmpNE(index_size, zero), scan, after);
+
+  // The output vertex is corner of the primitive at position primitive, in
+  // block, which scans from the block's first position on. The carry of the
+  // block is read from the cuts of STRIP_CUTS_TASK (src/dxmt/dxmt_context.hpp).
+  // so_draw_prologue counted the primitives of the blocks the scan carried,
+  // and those after them when the scan saw no cut, or those of the first
+  // block without cuts.
+  auto carry_past = llvm::BasicBlock::Create(context, "strip_cuts_carry_past", function);
+  ir.SetInsertPoint(scan);
+  auto primitive = ir.CreateUDiv(output_vertex, ir.getInt32(vertices));
+  auto corner = ir.CreateSub(output_vertex, ir.CreateMul(primitive, ir.getInt32(vertices)));
+  auto block = ir.CreateLShr(primitive, ir.getInt32(10));
+  auto first = ir.CreateShl(block, ir.getInt32(10));
+  auto cuts = ir.CreateExtractValue(draw, {8});
+  auto cut_at = [&](unsigned word) {
+    return ir.CreateLoad(
+        types._int, ir.CreateGEP(types._int, cuts, {ir.CreateAdd(ir.CreateMul(block, ir.getInt32(4)), ir.getInt32(word))})
+    );
+  };
+  ir.CreateCondBr(ir.CreateICmpNE(block, zero), carry, carried);
+  ir.SetInsertPoint(carry);
+  ir.CreateCondBr(
+      ir.CreateICmpNE(cuts, llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(cuts->getType()))),
+      carry_blocks, carried
+  );
+  ir.SetInsertPoint(carry_blocks);
+  auto carried_blocks = ir.CreateLoad(types._int, cuts);
+  ir.CreateCondBr(ir.CreateICmpULT(block, carried_blocks), carry_read, carry_past);
+  ir.SetInsertPoint(carry_read);
+  auto carry_read_last = cut_at(6);
+  auto carry_read_valid = cut_at(7);
+  ir.CreateBr(carried);
+  // Past the carried blocks, a strip with no cut in them takes the plain
+  // numbering: every position before the block is a primitive
+  ir.SetInsertPoint(carry_past);
+  auto not_plain = ir.CreateICmpEQ(ir.CreateLoad(types._int, ir.CreateConstGEP1_32(types._int, cuts, 2)), zero);
+  ir.CreateBr(carried);
+  ir.SetInsertPoint(carried);
+  auto carry_last = ir.CreatePHI(types._int, 4);
+  carry_last->addIncoming(zero, scan);
+  carry_last->addIncoming(zero, carry);
+  carry_last->addIncoming(zero, carry_past);
+  carry_last->addIncoming(carry_read_last, carry_read);
+  auto carry_valid = ir.CreatePHI(types._int, 4);
+  carry_valid->addIncoming(zero, scan);
+  carry_valid->addIncoming(zero, carry);
+  carry_valid->addIncoming(first, carry_past);
+  carry_valid->addIncoming(carry_read_valid, carry_read);
+  // Any other block past those the scan carried is not drawn
+  auto past = ir.CreatePHI(ir.getInt1Ty(), 4);
+  past->addIncoming(ir.getFalse(), scan);
+  past->addIncoming(ir.getTrue(), carry);
+  past->addIncoming(not_plain, carry_past);
+  past->addIncoming(ir.getFalse(), carry_read);
+  auto end = ir.CreateAdd(primitive, ir.getInt32(window));
+  ir.CreateBr(loop);
+
+  // Over the positions from the block's first to the primitive's last: the
+  // run of indices without a cut, the last cut before the primitive plus 1,
+  // and the primitives before it without a cut
+  ir.SetInsertPoint(loop);
+  auto position = ir.CreatePHI(types._int, 2);
+  auto run = ir.CreatePHI(types._int, 2);
+  auto last = ir.CreatePHI(types._int, 2);
+  auto valid = ir.CreatePHI(types._int, 2);
+  position->addIncoming(first, carried);
+  run->addIncoming(zero, carried);
+  last->addIncoming(zero, carried);
+  valid->addIncoming(zero, carried);
+  ir.CreateCondBr(ir.CreateICmpULT(position, end), body, done);
+
+  ir.SetInsertPoint(body);
+  ir.CreateCondBr(ir.CreateICmpULT(position, ir.CreateExtractValue(draw, {5})), load, next);
+  ir.SetInsertPoint(load);
+  auto index_buffer = ir.CreateExtractValue(draw, {1});
+  ir.CreateCondBr(ir.CreateICmpEQ(index_size, ir.getInt32(2)), load16, load32);
+  auto is_cut = [&](llvm::IntegerType *index_type) {
+    auto indices = ir.CreateBitCast(index_buffer, index_type->getPointerTo((uint32_t)air::AddressSpace::device));
+    auto index = ir.CreateLoad(index_type, ir.CreateGEP(index_type, indices, {position}));
+    return ir.CreateICmpEQ(index, llvm::ConstantInt::get(index_type, index_type->getBitMask()));
+  };
+  ir.SetInsertPoint(load16);
+  auto cut16 = is_cut(ir.getInt16Ty());
+  ir.CreateBr(next);
+  ir.SetInsertPoint(load32);
+  auto cut32 = is_cut(ir.getInt32Ty());
+  ir.CreateBr(next);
+
+  ir.SetInsertPoint(next);
+  auto cut = ir.CreatePHI(ir.getInt1Ty(), 3);
+  cut->addIncoming(ir.getFalse(), body);
+  cut->addIncoming(cut16, load16);
+  cut->addIncoming(cut32, load32);
+  auto next_run = ir.CreateSelect(cut, zero, ir.CreateAdd(run, one));
+  auto next_last =
+      ir.CreateSelect(ir.CreateAnd(cut, ir.CreateICmpULT(position, primitive)), ir.CreateAdd(position, one), last);
+  // The primitive ending here starts before this one
+  auto counted = ir.CreateAnd(
+      ir.CreateICmpUGE(next_run, ir.getInt32(window)), ir.CreateICmpULT(ir.CreateAdd(position, one), end)
+  );
+  auto next_valid = ir.CreateAdd(valid, ir.CreateZExt(counted, types._int));
+  position->addIncoming(ir.CreateAdd(position, one), next);
+  run->addIncoming(next_run, next);
+  last->addIncoming(next_last, next);
+  valid->addIncoming(next_valid, next);
+  ir.CreateBr(loop);
+
+  // A triangle starts the winding of its strip at the strip's first
+  // position: the last cut before it plus 1, or the draw's first
+  ir.SetInsertPoint(done);
+  auto strip_first = ir.CreateSelect(ir.CreateICmpUGT(carry_last, last), carry_last, last);
+  llvm::Value *cut_element = ir.CreateAdd(primitive, corner);
+  if (vertices == 3) {
+    auto odd = ir.CreateAnd(ir.CreateSub(primitive, strip_first), one);
+    auto offset = ir.CreateSelect(
+        ir.CreateICmpEQ(corner, zero), zero,
+        ir.CreateSelect(ir.CreateICmpEQ(corner, one), ir.CreateAdd(one, odd), ir.CreateSub(ir.getInt32(2), odd))
+    );
+    cut_element = ir.CreateAdd(primitive, offset);
+  } else if (window == 4) {
+    cut_element = ir.CreateAdd(cut_element, one);
+  }
+  auto cut_written = ir.CreateAdd(
+      ir.CreateMul(ir.CreateAdd(carry_valid, valid), ir.getInt32(vertices)), corner
+  );
+  auto cut_discard = ir.CreateOr(ir.CreateICmpULT(run, ir.getInt32(window)), past);
+  // A primitive left out loads the index at its own position, one of the draw
+  cut_element = ir.CreateSelect(cut_discard, primitive, cut_element);
+  ir.CreateBr(after);
+
+  ir.SetInsertPoint(after);
+  auto element_phi = ir.CreatePHI(types._int, 2);
+  element_phi->addIncoming(element, before);
+  element_phi->addIncoming(cut_element, done);
+  auto written_phi = ir.CreatePHI(types._int, 2);
+  written_phi->addIncoming(output_vertex, before);
+  written_phi->addIncoming(cut_written, done);
+  auto discard_phi = ir.CreatePHI(ir.getInt1Ty(), 2);
+  discard_phi->addIncoming(ir.getFalse(), before);
+  discard_phi->addIncoming(cut_discard, done);
+  return {element_phi, written_phi, discard_phi};
 }
 
 llvm::Value *
@@ -525,7 +734,10 @@ IOHelper::PopulateOutputStreamOutput(
 
   // The vertex limit covers whole primitives that fit into every slot the
   // declaration writes, and is 0 when one of them has no buffer
-  auto fits = ir.CreateICmpULT(output_vertex, ir.CreateZExt(ir.CreateExtractValue(stream_output_draw, {2}), types._long));
+  llvm::Value *fits =
+      ir.CreateICmpULT(output_vertex, ir.CreateZExt(ir.CreateExtractValue(stream_output_draw, {2}), types._long));
+  if (io.stream_output_discard)
+    fits = ir.CreateAnd(fits, ir.CreateNot(io.stream_output_discard));
   auto current = ir.GetInsertBlock();
   auto write_vertex = llvm::BasicBlock::Create(ir.getContext(), "stream_output_write", current->getParent());
   auto continuation = llvm::BasicBlock::Create(ir.getContext(), "stream_output_done", current->getParent());

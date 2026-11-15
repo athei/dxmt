@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,10 @@ public:
   llvm::Value *
   PopulateOutputSanitizePosition(uint32_t FromRegister, uint32_t Mask, llvm::Value *StructRet, uint32_t AtElement);
 
+  /* A position outside the clip volume */
+  llvm::Value *
+  PopulateOutputClippedPosition(llvm::Value *StructRet, uint32_t AtElement);
+
   llvm::Value *
   PopulateOutputDepth(llvm::Value *StructRet, uint32_t AtElement);
 
@@ -82,6 +87,16 @@ public:
      the draw writes, a 64-bit value */
   std::pair<llvm::Value *, llvm::Value *> InitializeStreamOutputVertex(
       const SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *VertexSO, uint32_t StreamOutputDrawArgumentIndex
+  );
+
+  /* Of an indexed strip whose primitive adds one index, Window indices and
+     Vertices output vertices each: restarts the strip after each cut index
+     and writes the primitives without a cut one after another. Returns the
+     element of the draw at the output vertex, the output vertex of the
+     instance it is written at, and whether the primitive is left out; for a
+     draw without indices Element, OutputVertex and false. */
+  std::tuple<llvm::Value *, llvm::Value *, llvm::Value *> InitializeStreamOutputStripCuts(
+      llvm::Value *Draw, llvm::Value *OutputVertex, llvm::Value *Element, uint32_t Window, uint32_t Vertices
   );
 
   /* OutputMasks has the components the vertex shader writes of each of its

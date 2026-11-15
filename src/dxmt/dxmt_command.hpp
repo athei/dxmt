@@ -170,8 +170,9 @@ public:
     encoder.setVertexBuffer({}, 0, kCustomBufferArgumentIndex0);
   }
 
-  /* The pipelines of the vertex functions so_draw_prologue and so_draw_auto,
-     each run by a draw of one point with its task at kCustomBufferArgumentIndex0 */
+  /* The pipelines of the vertex functions so_draw_prologue, so_draw_auto and
+     strip_cuts_blocks, each run by a draw of one point, strip_cuts_blocks of
+     a point for each block, with its task at kCustomBufferArgumentIndex0 */
   WMT::RenderPipelineState
   streamOutputDrawPrologue() {
     return so_draw_prologue;
@@ -180,6 +181,11 @@ public:
   WMT::RenderPipelineState
   streamOutputDrawAuto() {
     return so_draw_auto;
+  }
+
+  WMT::RenderPipelineState
+  stripCutsBlocks() {
+    return strip_cuts_blocks;
   }
 
 private:
@@ -212,6 +218,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> ts_draw_arguments_marshal;
   WMT::Reference<WMT::RenderPipelineState> so_draw_prologue;
   WMT::Reference<WMT::RenderPipelineState> so_draw_auto;
+  WMT::Reference<WMT::RenderPipelineState> strip_cuts_blocks;
 };
 
 class DepthStencilBlitContext {

@@ -62,7 +62,8 @@ EmulatedCommandContext::EmulatedCommandContext(WMT::Device device, InternalComma
   }
 
   for (auto [name, pipeline] :
-       {std::pair{"so_draw_prologue", &so_draw_prologue}, std::pair{"so_draw_auto", &so_draw_auto}}) {
+       {std::pair{"so_draw_prologue", &so_draw_prologue}, std::pair{"so_draw_auto", &so_draw_auto},
+        std::pair{"strip_cuts_blocks", &strip_cuts_blocks}}) {
     auto function = library.newFunction(name);
     WMTRenderPipelineInfo info;
     WMT::InitializeRenderPipelineInfo(info);

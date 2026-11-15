@@ -198,6 +198,10 @@ struct io_binding_map {
   llvm::Value *mesh = nullptr;
   std::function<void()> call_emit;
   std::function<void()> call_cut;
+  /* i1 of the vertex function of the emulated stream output: the vertex
+     belongs to a primitive of an indexed strip with a cut index, which is
+     neither written nor rasterized */
+  llvm::Value *stream_output_discard = nullptr;
 };
 
 struct context {
@@ -328,6 +332,8 @@ public:
   bool isSystemValue() const {
     return system_value_ != microsoft::D3D10_SB_NAME_UNDEFINED;
   }
+
+  microsoft::D3D10_SB_NAME systemValue() const { return system_value_; }
 
   RegisterComponentType componentType() const {
     return (RegisterComponentType)component_type_;

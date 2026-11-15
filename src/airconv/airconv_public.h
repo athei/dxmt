@@ -246,6 +246,8 @@ struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA {
   struct SM50_STREAM_OUTPUT_ELEMENT *elements;
   /* enum SM50_STREAM_OUTPUT_TOPOLOGY */
   uint32_t topology;
+  /* the function also returns its outputs, for the rasterized stream */
+  uint32_t rasterized;
 };
 
 enum SM50_SHADER_METAL_VERSION {

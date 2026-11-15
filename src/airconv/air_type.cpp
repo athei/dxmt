@@ -71,6 +71,7 @@ AirType::AirType(LLVMContext &context) : context(context) {
       _int, // index limit
       _int, // index size
       _int, // reserved
+      _int->getPointerTo((uint32_t)AddressSpace::device), // strip cuts
     },
     "dxmt_stream_output_draw"
   );

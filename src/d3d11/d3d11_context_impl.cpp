@@ -115,9 +115,10 @@ to_metal_primitive_type(D3D11_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType& primiti
 
 /* How the emulated stream output expands the topology to a list: the
    SM50_STREAM_OUTPUT_TOPOLOGY of its vertex function, and in draw the same
-   as numbers and the list primitive its draws are encoded with, which has
-   the topology class of the pipeline (to_metal_primitive_topology). False
-   for patches, which stream output takes only from tessellation. */
+   as numbers and the list primitive its draws are encoded with, which a
+   rasterized stream draws and which has the topology class of the pipeline
+   (to_metal_primitive_topology, which has none for adjacency). False for
+   patches, which stream output takes only from tessellation. */
 inline bool
 to_stream_output_topology(D3D11_PRIMITIVE_TOPOLOGY topo, uint8_t &topology, StreamOutputDraw &draw) {
   auto set = [&](SM50_STREAM_OUTPUT_TOPOLOGY function, uint8_t lead, uint8_t step, uint8_t vertices,
@@ -141,13 +142,13 @@ to_stream_output_topology(D3D11_PRIMITIVE_TOPOLOGY topo, uint8_t &topology, Stre
   case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
     return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP, 2, 1, 3, WMTPrimitiveTypeTriangle);
   case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ:
-    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_LIST_ADJ, 0, 4, 2, WMTPrimitiveTypePoint);
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_LIST_ADJ, 0, 4, 2, WMTPrimitiveTypeLine);
   case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ:
-    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ, 3, 1, 2, WMTPrimitiveTypePoint);
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_LINE_STRIP_ADJ, 3, 1, 2, WMTPrimitiveTypeLine);
   case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ:
-    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_LIST_ADJ, 0, 6, 3, WMTPrimitiveTypePoint);
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_LIST_ADJ, 0, 6, 3, WMTPrimitiveTypeTriangle);
   case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ:
-    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP_ADJ, 4, 2, 3, WMTPrimitiveTypePoint);
+    return set(SM50_STREAM_OUTPUT_TOPOLOGY_TRIANGLE_STRIP_ADJ, 4, 2, 3, WMTPrimitiveTypeTriangle);
   default:
     return false;
   }
@@ -4612,10 +4613,12 @@ public:
   StreamOutputDraw so_draw_ = {};
 
   bool
-  InitializeStreamOutputDraw(IMTLD3D11StreamOutputLayout *pLayout, uint8_t &Topology) {
+  InitializeStreamOutputDraw(const MTL_GRAPHICS_PIPELINE_DESC &Desc, uint8_t &Topology) {
+    auto pLayout = Desc.SOLayout;
     so_draw_ = {};
     if (!to_stream_output_topology(state_.InputAssembler.Topology, Topology, so_draw_))
       return false;
+    so_draw_.rasterized = Desc.RasterizationEnabled;
     MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC *elements;
     uint32_t strides[kStreamOutputSlots];
     uint32_t num_elements = pLayout->GetStreamOutputElements(&elements, strides);
@@ -5083,8 +5086,9 @@ public:
         (state_.OutputMerger.DepthStencilState ? state_.OutputMerger.DepthStencilState : default_depth_stencil_state)
             ->IsEnabled();
     // FIXME: corner case: DSV is not bound or missing planar
-    Desc.RasterizationEnabled =
-        (PS || ds_enabled) && (!Desc.SOLayout || Desc.SOLayout->RasterizedStream() != D3D11_SO_NO_RASTERIZED_STREAM);
+    // The vertex shader writes stream 0 alone, so another rasterized stream
+    // rasterizes nothing
+    Desc.RasterizationEnabled = (PS || ds_enabled) && (!Desc.SOLayout || Desc.SOLayout->RasterizedStream() == 0);
     if (!Desc.RasterizationEnabled)
       Desc.PixelShader = nullptr; // Even rasterization is disabled, Metal still checks if VS-PS signatures match.
     Desc.SampleMask = state_.OutputMerger.SampleMask;
@@ -5317,7 +5321,7 @@ public:
     so_draw_valid_ = false;
     if (pipelineDesc.SOLayout) {
       // Patches are not streamed out without tessellation
-      if (!InitializeStreamOutputDraw(pipelineDesc.SOLayout, pipelineDesc.SOTopology))
+      if (!InitializeStreamOutputDraw(pipelineDesc, pipelineDesc.SOTopology))
         return DrawCallStatus::Invalid;
       so_draw_valid_ = true;
     }
