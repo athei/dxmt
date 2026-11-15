@@ -561,8 +561,9 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
   using namespace dxmt::dxbc;
 
   const EntryPoint &entry = shader->dxil_entry;
-  auto &mesh_output_handlers = shader->mesh_output_handlers;
-  uint32_t &num_mesh_vertex_data = shader->num_mesh_vertex_data;
+  auto &mesh = shader->gs_stream_mesh[0];
+  auto &mesh_output_handlers = mesh.output_handlers;
+  uint32_t &num_mesh_vertex_data = mesh.num_vertex_data;
 
   uint32_t input_count = (uint32_t)entry.inputs.size();
   uint32_t max_input_register = 0;
@@ -600,7 +601,7 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
     max_output_register = std::max(max_output_register, reg + element.rows);
     switch (element.semantic_kind) {
     case SemanticKind::Position: {
-      shader->func_signature.DefineMeshVertexOutput(air::OutputPosition{.type = air::msl_float4});
+      mesh.vertex_outputs.push_back(air::OutputPosition{.type = air::msl_float4});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputPosition(reg, mask, output.vertex_id);
       });
@@ -615,7 +616,7 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
         if (auto err = user.takeError())
           return err;
         auto const mesh_vertex_data_index = num_mesh_vertex_data++;
-        shader->func_signature.DefineMeshVertexOutput(
+        mesh.vertex_outputs.push_back(
             air::OutputMeshData{.user = *user, .type = *msl_type, .index = mesh_vertex_data_index}
         );
         mesh_output_handlers.push_back([=, type = *msl_type](MeshOutputContext &output, IOHelper &io) {
@@ -625,14 +626,14 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
       break;
     }
     case SemanticKind::RenderTargetArrayIndex: {
-      shader->func_signature.DefineMeshPrimitiveOutput(air::OutputRenderTargetArrayIndex{});
+      mesh.primitive_outputs.push_back(air::OutputRenderTargetArrayIndex{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputRenderTargetArrayIndex(reg, mask, output.primitive_id);
       });
       break;
     }
     case SemanticKind::ViewPortArrayIndex: {
-      shader->func_signature.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
+      mesh.primitive_outputs.push_back(air::OutputViewportArrayIndex{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputViewportArrayIndex(reg, mask, output.primitive_id);
       });
@@ -641,7 +642,7 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
     case SemanticKind::ClipDistance:
     case SemanticKind::CullDistance: {
       bool clip = element.semantic_kind == SemanticKind::ClipDistance;
-      auto &scalars = clip ? shader->clip_distance_scalars : shader->cull_distance_scalars;
+      auto &scalars = clip ? mesh.clip_distance_scalars : shader->cull_distance_scalars;
       for (unsigned row = 0; row < element.rows; row++) {
         auto user = element_attribute_name(element, row);
         if (auto err = user.takeError())
@@ -650,7 +651,7 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
           scalars.push_back({(uint8_t)(element.start_col + component), (uint8_t)(reg + row)});
         }
         auto const mesh_vertex_data_index = num_mesh_vertex_data++;
-        shader->func_signature.DefineMeshVertexOutput(
+        mesh.vertex_outputs.push_back(
             air::OutputMeshData{.user = *user, .type = air::msl_float4, .index = mesh_vertex_data_index}
         );
         mesh_output_handlers.push_back([=, reg = reg + row](MeshOutputContext &output, IOHelper &io) {
@@ -660,7 +661,7 @@ initialize_geometry_signature(dxmt::dxbc::SM50ShaderInternal *shader) {
       break;
     }
     case SemanticKind::PrimitiveID: {
-      shader->func_signature.DefineMeshPrimitiveOutput(air::OutputPrimitiveID{});
+      mesh.primitive_outputs.push_back(air::OutputPrimitiveID{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputPrimitiveID(reg, mask, output.primitive_id);
       });

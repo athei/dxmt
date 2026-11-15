@@ -245,9 +245,9 @@ struct SO_GEOMETRY_RECORD {
   uint64_t counts;
   /* the position of each one's first primitive */
   uint64_t firsts;
-  /* the primitives that are written, those that fit into every slot */
-  uint32_t limit;
-  uint32_t reserved;
+  /* the primitives of each stream that are written, those that fit into
+     every slot of the stream */
+  uint32_t limit[kStreamOutputStreams];
 };
 
 /* What a draw through a geometry shader that streams out passes to the vertex
@@ -273,27 +273,32 @@ struct SO_GEOMETRY_TASK {
      function sets when they had too many object threadgroups */
   uint64_t arguments;
   uint64_t omitted;
-  /* the sum and the first position of each block of
-     kGeometryStreamOutputBlock counts */
+  /* the sums and the first positions in each stream of each block of
+     kGeometryStreamOutputBlock mesh threadgroups */
   uint64_t blocks;
   /* the object threadgroups of the draw, and the mesh threadgroups of each */
   uint32_t threadgroups;
   uint32_t mesh_threadgroups;
   uint32_t vertices_per_primitive;
+  /* the streams of the counts, and the stream of each slot */
+  uint32_t streams;
+  uint32_t slot_streams[kStreamOutputSlots];
+  /* a bit for each stream that writes a slot without a target */
   uint32_t unbound;
   /* the blocks the counts can take; with 1, so_geometry_prologue adds them
      up alone */
   uint32_t block_count;
 };
 
-/* The counts so_geometry_block_sums and so_geometry_block_firsts add up in
-   one thread each; dxmt_command.metal has the same */
+/* The mesh threadgroups whose counts so_geometry_block_sums and
+   so_geometry_block_firsts add up in one thread each; dxmt_command.metal has
+   the same */
 constexpr uint32_t kGeometryStreamOutputBlock = 1024;
 
 /* Bytes of the encoder's argument buffer such a draw takes: its
    SO_GEOMETRY_TASK, then the SO_GEOMETRY_RECORD of the count pass */
-constexpr size_t kGeometryStreamOutputRecordOffset = 224;
-constexpr size_t kGeometryStreamOutputArgumentSize = 288;
+constexpr size_t kGeometryStreamOutputRecordOffset = 240;
+constexpr size_t kGeometryStreamOutputArgumentSize = 304;
 static_assert(sizeof(SO_GEOMETRY_TASK) <= kGeometryStreamOutputRecordOffset);
 static_assert(kGeometryStreamOutputRecordOffset + sizeof(SO_GEOMETRY_RECORD) <= kGeometryStreamOutputArgumentSize);
 
@@ -317,6 +322,10 @@ struct GeometryStreamOutputDraw {
   /* the mesh threadgroups of an object threadgroup: the input primitives of
      a warp times the geometry shader instances */
   uint32_t mesh_threadgroups;
+  /* the streams the declaration writes, from 0 on, and the stream of each
+     slot it writes */
+  uint32_t streams;
+  uint32_t slot_streams[kStreamOutputSlots];
 };
 
 /* A draw through the emulated stream output */

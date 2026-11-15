@@ -4790,6 +4790,7 @@ public:
     if (!primitives)
       return false;
     so_geometry_.mesh_threadgroups = primitives * std::max(reflection.InstanceCount, 1u);
+    so_geometry_.streams = Desc.SOLayout->GetSlotStreams(so_geometry_.slot_streams);
     return true;
   }
 
@@ -5269,7 +5270,10 @@ public:
     // FIXME: corner case: DSV is not bound or missing planar
     // The vertex shader writes stream 0 alone, so another rasterized stream
     // rasterizes nothing
-    Desc.RasterizationEnabled = (PS || ds_enabled) && (!Desc.SOLayout || Desc.SOLayout->RasterizedStream() == 0);
+    Desc.RasterizationEnabled =
+        (PS || ds_enabled) &&
+        (!Desc.SOLayout || (Desc.GeometryShader ? Desc.SOLayout->RasterizedStream() != D3D11_SO_NO_RASTERIZED_STREAM
+                                                : Desc.SOLayout->RasterizedStream() == 0));
     if (!Desc.RasterizationEnabled)
       Desc.PixelShader = nullptr; // Even rasterization is disabled, Metal still checks if VS-PS signatures match.
     Desc.SampleMask = state_.OutputMerger.SampleMask;

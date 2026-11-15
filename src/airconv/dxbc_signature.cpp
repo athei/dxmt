@@ -1051,9 +1051,10 @@ handle_signature_gs(
     SM50ShaderInternal *sm50_shader, uint32_t phase
 ) {
   uint32_t &max_output_register = sm50_shader->max_output_register;
-  auto &func_signature = sm50_shader->func_signature;
-  auto &mesh_output_handlers = sm50_shader->mesh_output_handlers;
-  uint32_t &num_mesh_vertex_data = sm50_shader->num_mesh_vertex_data;
+  // outputParser is the signature of this stream
+  auto &mesh = sm50_shader->gs_stream_mesh[sm50_shader->gs_output_stream];
+  auto &mesh_output_handlers = mesh.output_handlers;
+  uint32_t &num_mesh_vertex_data = mesh.num_vertex_data;
 
   auto findOutputElement = [&](auto matcher) -> Signature {
     const D3D11_SIGNATURE_PARAMETER *parameters;
@@ -1116,7 +1117,7 @@ handle_signature_gs(
     auto sgv = Inst.m_OutputDeclSGV.Name;
     switch (sgv) {
      case D3D10_SB_NAME_PRIMITIVE_ID: {
-      func_signature.DefineMeshPrimitiveOutput(OutputPrimitiveID{});
+      mesh.primitive_outputs.push_back(OutputPrimitiveID{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputPrimitiveID(reg, mask, output.primitive_id);
       });
@@ -1137,11 +1138,11 @@ handle_signature_gs(
     case D3D10_SB_NAME_CLIP_DISTANCE: {
       for (unsigned i = 0; i < 4; i++) {
         if (mask & (1 << i)) {
-          sm50_shader->clip_distance_scalars.push_back({.component = (uint8_t)(i), .reg = (uint8_t)reg});
+          mesh.clip_distance_scalars.push_back({.component = (uint8_t)(i), .reg = (uint8_t)reg});
         }
       }
       auto const mesh_vertex_data_index = num_mesh_vertex_data++;
-      func_signature.DefineMeshVertexOutput(OutputMeshData{
+      mesh.vertex_outputs.push_back(OutputMeshData{
         .user = std::format("SV_ClipDistance{}", reg),
         .type = msl_float4,
         .index = mesh_vertex_data_index
@@ -1159,7 +1160,7 @@ handle_signature_gs(
         }
       }
       auto const mesh_vertex_data_index = num_mesh_vertex_data++;
-      func_signature.DefineMeshVertexOutput(OutputMeshData{
+      mesh.vertex_outputs.push_back(OutputMeshData{
         .user = std::format("SV_CullDistance{}", reg),
         .type = msl_float4,
         .index = mesh_vertex_data_index
@@ -1171,21 +1172,21 @@ handle_signature_gs(
       break;
     }
     case D3D10_SB_NAME_POSITION: {
-      func_signature.DefineMeshVertexOutput(OutputPosition{.type = msl_float4});
+      mesh.vertex_outputs.push_back(OutputPosition{.type = msl_float4});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputPosition(reg, mask, output.vertex_id);
       });
       break;
     }
     case D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX: {
-      func_signature.DefineMeshPrimitiveOutput(OutputRenderTargetArrayIndex{});
+      mesh.primitive_outputs.push_back(OutputRenderTargetArrayIndex{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputRenderTargetArrayIndex(reg, mask, output.primitive_id);
       });
       break;
     }
     case D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX: {
-      func_signature.DefineMeshPrimitiveOutput(OutputViewportArrayIndex{});
+      mesh.primitive_outputs.push_back(OutputViewportArrayIndex{});
       mesh_output_handlers.push_back([=](MeshOutputContext &output, IOHelper &io) {
         io.PopulateMeshOutputViewportArrayIndex(reg, mask, output.primitive_id);
       });
@@ -1212,7 +1213,7 @@ handle_signature_gs(
       if (sig.mask() == 0) break;
       auto const mesh_vertex_data_index = num_mesh_vertex_data++;
       auto const type = to_msl_type(sig.componentType());
-      func_signature.DefineMeshVertexOutput(OutputMeshData{
+      mesh.vertex_outputs.push_back(OutputMeshData{
         .user = sig.consistentAttributeName(),
         .type = type,
         .index = mesh_vertex_data_index
@@ -1252,7 +1253,10 @@ void handle_signature(
   case D3D11_SB_COMPUTE_SHADER:
     return handle_signature_cs(inputParser, *outputParser.Signature(0), Inst, shader, phase);
   case D3D10_SB_GEOMETRY_SHADER:
-    return handle_signature_gs(inputParser, *outputParser.Signature(0), Inst, shader, phase);
+    // A geometry shader has streams 0 to 3 only
+    if (shader->gs_output_stream >= D3D11_SO_STREAM_COUNT)
+      return;
+    return handle_signature_gs(inputParser, *outputParser.Signature(shader->gs_output_stream), Inst, shader, phase);
   default:
     assert(0);
     break;

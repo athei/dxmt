@@ -198,6 +198,8 @@ struct io_binding_map {
   llvm::Value *mesh = nullptr;
   std::function<void()> call_emit;
   std::function<void()> call_cut;
+  /* the stream of the emit or cut being converted */
+  uint32_t emit_stream = 0;
   /* UAV stores and atomics are left out, and an atomic returns 0: the pass
      of the geometry pipeline that only counts what its geometry shader
      streams out, in the vertex and the geometry shader, so that they run
@@ -354,6 +356,17 @@ private:
   RegisterComponentType component_type_;
 };
 
+/* The mesh outputs of one stream of a geometry shader, from the output
+   declarations after its dcl_stream. The mesh function writes those of the
+   rasterized stream. */
+struct GeometryStreamMesh {
+  std::vector<air::MeshVertexOutput> vertex_outputs;
+  std::vector<air::MeshPrimitiveOutput> primitive_outputs;
+  std::vector<std::function<void(MeshOutputContext &, IOHelper &)>> output_handlers;
+  std::vector<ScalarInfo> clip_distance_scalars;
+  uint32_t num_vertex_data = 0;
+};
+
 class SM50ShaderInternal {
 public:
   dxmt::dxbc::ShaderInfo shader_info;
@@ -386,6 +399,11 @@ public:
   microsoft::D3D10_SB_PRIMITIVE gs_input_primitive = {};
   std::vector<std::function<void(MeshOutputContext &, IOHelper &)>> mesh_output_handlers;
   uint32_t num_mesh_vertex_data = 0;
+  /* the stream of the last dcl_stream of a geometry shader */
+  uint32_t gs_output_stream = 0;
+  /* the streams of the dcl_stream of a geometry shader, a bit each */
+  uint32_t gs_streams = 0;
+  GeometryStreamMesh gs_stream_mesh[4];
   microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY gs_output_topology = {};
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;

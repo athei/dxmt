@@ -1906,6 +1906,9 @@ struct SM50_SHADER_EMULATE_GEOMETRY_STREAM_OUTPUT_DATA32 {
   uint32_t strides[4];
   uint32_t elements;
   uint32_t rasterized;
+  uint32_t rasterized_stream;
+  uint32_t streams;
+  uint32_t slot_streams[4];
 };
 
 struct SM50_SHADER_COMMON_DATA32 {
@@ -2013,6 +2016,9 @@ sm50_compilation_argument32_convert(
       memcpy(data->strides, src->strides, sizeof(data->strides));
       data->elements = UInt32ToPtr(src->elements);
       data->rasterized = src->rasterized;
+      data->rasterized_stream = src->rasterized_stream;
+      data->streams = src->streams;
+      memcpy(data->slot_streams, src->slot_streams, sizeof(data->slot_streams));
       break;
     }
     case SM50_SHADER_COMMON: {

@@ -760,9 +760,13 @@ struct InstInterpolateOffset {
   Swizzle read_swizzle;
 };
 
-struct InstEmit {};
+struct InstEmit {
+  uint32_t stream = 0;
+};
 
-struct InstCut {};
+struct InstCut {
+  uint32_t stream = 0;
+};
 
 using InstructionList = PackedVariantList<
   /* Generic */

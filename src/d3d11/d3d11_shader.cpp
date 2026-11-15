@@ -14,6 +14,12 @@ namespace dxmt {
    follows upstream, and would go on handing out the code compiled before. */
 static constexpr uint32_t kGeometryStreamOutput = 1;
 
+/* Salt of the other geometry pipeline variants whose code our series
+   changes: those without stream output of a geometry shader that declares a
+   stream other than 0. It enters only their keys, so that the cached variants
+   of every other shader stay valid; raise it as kGeometryStreamOutput. */
+static constexpr uint32_t kGeometryOwnVariants = 1;
+
 SM50_SHADER_FLAG
 getGlobalShaderFlag() {
   static SM50_SHADER_FLAG shader_flag;
@@ -466,6 +472,9 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     h.update(so_layout->Digest());
     h.update(variant.stream_output_pass);
     h.update(variant.rasterized);
+  } else if (shader->reflection().GeometryShader.Streams & ~1u) {
+    // Without stream output only stream 0 is drawn
+    h.update(kGeometryOwnVariants);
   }
   auto variant_digest = h.final();
   std::string func_name = "gs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
@@ -475,10 +484,13 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     stream_output.next = common;
     stream_output.pass = variant.stream_output_pass;
     stream_output.rasterized = variant.rasterized;
-    if (so_layout)
+    if (so_layout) {
       stream_output.num_elements = so_layout->GetStreamOutputElements(
           (MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC **)&stream_output.elements, stream_output.strides
       );
+      stream_output.streams = so_layout->GetSlotStreams(stream_output.slot_streams);
+      stream_output.rasterized_stream = so_layout->RasterizedStream();
+    }
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA geometry;
     geometry.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
     geometry.next = so_layout ? (void *)&stream_output : (void *)common;

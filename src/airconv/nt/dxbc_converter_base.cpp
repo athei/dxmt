@@ -2666,12 +2666,14 @@ Converter::operator()(const InstMaskedSumOfAbsDiff &msad) {
   StoreOperand(msad.dst, Result);
 }
 void
-Converter::operator()(const InstEmit &) {
+Converter::operator()(const InstEmit &emit) {
+  res.emit_stream = emit.stream;
   res.call_emit();
 }
 
 void
-Converter::operator()(const InstCut &) {
+Converter::operator()(const InstCut &cut) {
+  res.emit_stream = cut.stream;
   res.call_cut();
 }
 

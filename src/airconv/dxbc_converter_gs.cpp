@@ -117,6 +117,15 @@ convert_dxbc_geometry_shader(
   );
   bool build_mesh =
       !stream_output || (stream_output->pass == SM50_GEOMETRY_STREAM_OUTPUT_WRITE && stream_output->rasterized);
+  // The mesh has the outputs of the rasterized stream, which is stream 0
+  // without stream output
+  uint32_t mesh_stream =
+      stream_output && stream_output->rasterized_stream < 4 ? stream_output->rasterized_stream : 0;
+  auto &mesh_outputs = pShaderInternal->gs_stream_mesh[mesh_stream];
+  for (auto &output : mesh_outputs.vertex_outputs)
+    func_signature.DefineMeshVertexOutput(output);
+  for (auto &output : mesh_outputs.primitive_outputs)
+    func_signature.DefineMeshPrimitiveOutput(output);
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
   SM50_SHADER_COMMON_DATA *sm50_common = nullptr;
@@ -152,7 +161,7 @@ convert_dxbc_geometry_shader(
         .arg_name = "geometry_stream_output",
         .raster_order_group = {}
     });
-  auto& gs_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto &gs_output_handlers = mesh_outputs.output_handlers;
 
   auto binding_map = rootsig ? setup_binding_rootsig(
                                    shader_info, func_signature, module, D3D10_SB_GEOMETRY_SHADER, rootsig->bytecode,
@@ -182,9 +191,9 @@ convert_dxbc_geometry_shader(
   auto mesh_idx = func_signature.DefineInput(air::InputMesh{(uint32_t)max_vertex_out, (uint32_t)max_vertex_out, topology});
   uint32_t tg_in_grid_idx = func_signature.DefineInput(air::InputThreadgroupPositionInGrid{});
 
-  if (pShaderInternal->clip_distance_scalars.size() > 0) {
+  if (mesh_outputs.clip_distance_scalars.size() > 0) {
     func_signature.DefineMeshVertexOutput(
-        air::OutputClipDistance{.count = pShaderInternal->clip_distance_scalars.size()}
+        air::OutputClipDistance{.count = mesh_outputs.clip_distance_scalars.size()}
     );
   }
 
@@ -225,7 +234,7 @@ convert_dxbc_geometry_shader(
   resource_map.mesh = mesh_ptr;
 
   auto emit_clip_distances = [&](llvm::Value *vertex) {
-    for (auto x : llvm::enumerate(pShaderInternal->clip_distance_scalars)) {
+    for (auto x : llvm::enumerate(mesh_outputs.clip_distance_scalars)) {
       if (x.value().reg >= max_output_register)
         continue;
       auto src_ptr = builder.CreateGEP(
@@ -351,14 +360,24 @@ convert_dxbc_geometry_shader(
   GeometryStreamOutput stream_output_state = {};
   if (stream_output) {
     resource_map.call_emit = [&, emit = std::move(resource_map.call_emit)]() {
-      if (build_mesh)
+      if (build_mesh && resource_map.emit_stream == stream_output->rasterized_stream)
         emit();
-      io.EmitGeometryStreamOutput(stream_output_state);
+      io.EmitGeometryStreamOutput(stream_output_state, resource_map.emit_stream);
     };
     resource_map.call_cut = [&, cut = std::move(resource_map.call_cut)]() {
-      if (build_mesh)
+      if (build_mesh && resource_map.emit_stream == stream_output->rasterized_stream)
         cut();
-      io.CutGeometryStreamOutput(stream_output_state);
+      io.CutGeometryStreamOutput(stream_output_state, resource_map.emit_stream);
+    };
+  } else {
+    // Without stream output only stream 0 is rasterized
+    resource_map.call_emit = [&, emit = std::move(resource_map.call_emit)]() {
+      if (resource_map.emit_stream == 0)
+        emit();
+    };
+    resource_map.call_cut = [&, cut = std::move(resource_map.call_cut)]() {
+      if (resource_map.emit_stream == 0)
+        cut();
     };
   }
 
@@ -557,6 +576,7 @@ convert_dxbc_geometry_shader(
   if (auto err = epilogue_result.takeError()) {
     return err;
   }
+  resource_map.emit_stream = stream_output ? stream_output->rasterized_stream : 0;
   resource_map.call_cut();
   if (stream_output)
     io.FinishGeometryStreamOutput(stream_output_state);

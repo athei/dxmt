@@ -587,6 +587,10 @@ read_control_flow(
       sm50_shader->gs_instance_count = Inst.m_GSInstanceCountDecl.InstanceCount;
       break;
     case D3D11_SB_OPCODE_DCL_STREAM:
+      sm50_shader->gs_output_stream = Inst.m_Operands[0].m_Index[0].m_RegIndex;
+      if (sm50_shader->gs_output_stream < 4)
+        sm50_shader->gs_streams |= 1u << sm50_shader->gs_output_stream;
+      break;
     case D3D11_SB_OPCODE_DCL_INTERFACE:
     case D3D11_SB_OPCODE_DCL_FUNCTION_TABLE:
     case D3D11_SB_OPCODE_DCL_FUNCTION_BODY:
@@ -637,19 +641,16 @@ read_control_flow(
       break;
     }
     case D3D11_SB_OPCODE_EMIT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstEmit{});
+      bb_current->instructions.push_back(InstEmit{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     case D3D11_SB_OPCODE_EMITTHENCUT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstEmit{});
-      bb_current->instructions.push_back(InstCut{});
+      bb_current->instructions.push_back(InstEmit{Inst.m_Operands[0].m_Index[0].m_RegIndex});
+      bb_current->instructions.push_back(InstCut{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     case D3D11_SB_OPCODE_CUT_STREAM: {
-      assert(Inst.m_Operands[0].m_Value[0] == 0 && "multiple streams not supported");
-      bb_current->instructions.push_back(InstCut{});
+      bb_current->instructions.push_back(InstCut{Inst.m_Operands[0].m_Index[0].m_RegIndex});
       break;
     }
     default:

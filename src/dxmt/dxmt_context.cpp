@@ -518,14 +518,17 @@ ArgumentEncodingContext::countGeometryStreamOutput(
   }
   if (!so_geometry_count_pso)
     return false;
-  // Every mesh threadgroup of the draw writes its count
-  uint64_t entries = dispatch ? kGeometryStreamOutputIndirectThreadgroups : threadgroups * draw.mesh_threadgroups;
-  uint64_t blocks = (entries + kGeometryStreamOutputBlock - 1) / kGeometryStreamOutputBlock;
+  // Every mesh threadgroup of the draw writes the count of each stream
+  uint64_t mesh_threadgroups =
+      dispatch ? kGeometryStreamOutputIndirectThreadgroups : threadgroups * draw.mesh_threadgroups;
+  uint64_t entries = mesh_threadgroups * draw.streams;
+  uint64_t blocks = (mesh_threadgroups + kGeometryStreamOutputBlock - 1) / kGeometryStreamOutputBlock;
   so_geometry_blocks_ = uint32_t(blocks);
   constexpr uint64_t record_size = 64;
   static_assert(sizeof(SO_GEOMETRY_RECORD) <= record_size);
-  so_geometry_scratch_ =
-      allocateTempBuffer1(record_size + entries * 2 * sizeof(uint32_t) + blocks * 2 * sizeof(uint32_t), 16);
+  so_geometry_scratch_ = allocateTempBuffer1(
+      record_size + entries * 2 * sizeof(uint32_t) + blocks * 2 * kStreamOutputStreams * sizeof(uint32_t), 16
+  );
   if (!so_geometry_scratch_.gpu_buffer) {
     ERR_ONCE("Omitted a draw through a geometry shader that streams out: no scratch buffer");
     return false;
@@ -538,13 +541,14 @@ ArgumentEncodingContext::countGeometryStreamOutput(
 
   auto task = getMappedArgumentBuffer<SO_GEOMETRY_TASK>(argument_offset);
   *task = {};
-  bool unbound = false;
+  uint32_t unbound = 0;
   for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    task->slot_streams[slot] = draw.slot_streams[slot];
     if (!draw.strides[slot])
       continue;
     auto buffer = so_[slot].buffer.ptr();
     if (!buffer) {
-      unbound = true;
+      unbound |= 1u << draw.slot_streams[slot];
       continue;
     }
     auto allocation = buffer->current();
@@ -587,6 +591,7 @@ ArgumentEncodingContext::countGeometryStreamOutput(
   task->threadgroups = threadgroups;
   task->mesh_threadgroups = draw.mesh_threadgroups;
   task->vertices_per_primitive = draw.vertices_per_primitive;
+  task->streams = draw.streams;
   task->unbound = unbound;
 
   auto record = getMappedArgumentBuffer<SO_GEOMETRY_RECORD>(argument_offset + kGeometryStreamOutputRecordOffset);
