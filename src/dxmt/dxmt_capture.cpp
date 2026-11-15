@@ -31,7 +31,7 @@ CaptureState::getNextAction(uint64_t frame) {
     }
     break;
   case State::Capturing:
-    if (frame > next_capture_frame) {
+    if (frame >= next_capture_frame + kCaptureFrames) {
       next_capture_frame = 0;
       state = State::Idle;
       return NextAction::StopCapture;
@@ -50,16 +50,24 @@ CaptureState::scheduleNextFrameCapture(uint64_t next) {
 }
 
 bool
-CaptureState::shouldCaptureNextFrame() {
+CaptureState::shouldCaptureNextFrame(uint64_t frame) {
 #ifdef _WIN32
-  if (state != State::Idle)
+  /* Without capture nothing reads the keyboard. */
+  if (state == State::Freezed)
     return false;
-  SHORT state_ = GetAsyncKeyState(VK_F10);
-  if (state_ & 0x8000 && !capture_key_pressed_) {
-    capture_key_pressed_ = true;
-    return true;
-  }
-  capture_key_pressed_ = state_ & 0x8000;
+  /* Ctrl+Shift+P: P going down while Control and Shift are held and Alt is
+   * not, sampled once per frame (the first chunk of the frame), as Wine's
+   * Vulkan present and mtld3d sample it. */
+  if (frame == sampled_frame_)
+    return false;
+  sampled_frame_ = frame;
+  bool p_down = GetAsyncKeyState('P') & 0x8000;
+  bool pressed = p_down && !capture_key_pressed_ &&
+                 (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+                 (GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
+                 !(GetAsyncKeyState(VK_MENU) & 0x8000);
+  capture_key_pressed_ = p_down;
+  return pressed && state == State::Idle;
 #endif
   return false;
 };

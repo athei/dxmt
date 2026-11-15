@@ -110,8 +110,9 @@ The following environment variables can be used for **debugging** purposes.
 - `MTL_SHADER_VALIDATION=1` Enable Metal shader validation layer
 - `MTL_DEBUG_LAYER=1` Enable Metal API validation layer
 - `MTL_CAPTURE_ENABLED=1` Enable Metal frame capture
-- `DXMT_CAPTURE_EXECUTABLE="the executable name without extension"` Must be set to enable Metal frame capture. Press F10 to generate a capture. The captured result will be stored in the same directory as the executable.
-- `DXMT_CAPTURE_FRAME=n` Automatically capture n-th frame. Useful for debugging a replay.
+- `DXMT_CAPTURE_EXECUTABLE="the executable name without extension"` Must be set to enable Metal frame capture. Press Ctrl+Shift+P (P going down while Control and Shift are held and Alt is not) to capture the next three frames. The captured result is stored in the working directory, named after the executable and the frame.
+- `DXMT_CAPTURE_FILE=/unix/path/prefix` Stores the captures as `<prefix>-<n>.gputrace` instead, numbered from 1.
+- `DXMT_CAPTURE_FRAME=n` Automatically capture three frames from the n-th. Useful for debugging a replay.
 - `DXMT_LOG_LEVEL=none|error|warn|info|debug` Controls message logging.
 - `DXMT_LOG_PATH=/some/directory` Changes path where log files are stored. Set to `none` to disable log file creation entirely, without disabling logging.
 - `DXMT_SHADER_CACHE=0`: Disables the internal shader cache.

@@ -128,11 +128,19 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
     auto capture_mgr = WMT::CaptureManager::sharedCaptureManager();
     info.capture_object = device;
     info.destination = WMTCaptureDestinationGPUTraceDocument;
-    char filename[1024];
-    std::time_t now;
-    std::time(&now);
-    std::strftime(filename, 1024, "_%H'%M'%S_%m-%d-%y.gputrace", std::localtime(&now));
-    auto fileUrl = env::getUnixPath(env::getExeBaseName() + "_F." + std::to_string(chunk.frame_) + filename);
+    /* DXMT_CAPTURE_FILE, a unix path without the extension, numbers the
+     * captures of the process after it. */
+    std::string prefix = env::getEnvVar("DXMT_CAPTURE_FILE");
+    std::string fileUrl;
+    if (!prefix.empty()) {
+      fileUrl = prefix + "-" + std::to_string(capture_state.nextCaptureIndex()) + ".gputrace";
+    } else {
+      char filename[1024];
+      std::time_t now;
+      std::time(&now);
+      std::strftime(filename, 1024, "_%H'%M'%S_%m-%d-%y.gputrace", std::localtime(&now));
+      fileUrl = env::getUnixPath(env::getExeBaseName() + "_F." + std::to_string(chunk.frame_) + filename);
+    }
     WARN("A new capture will be saved to ", fileUrl);
     info.output_url.set(fileUrl.c_str());
 
@@ -145,7 +153,7 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
     break;
   }
   case CaptureState::NextAction::Nothing: {
-    if (capture_state.shouldCaptureNextFrame()) {
+    if (capture_state.shouldCaptureNextFrame(chunk.frame_)) {
       capture_state.scheduleNextFrameCapture(chunk.frame_ + 1);
     }
     break;
