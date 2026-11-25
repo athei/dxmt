@@ -91,6 +91,11 @@ task_scheduler<Task>::worker_func() {
         });
       }
 
+      // A destroyed scheduler drops the queued tasks; their owner frees them
+      // once the destructor has joined the workers
+      if (destroyed.load())
+        break;
+
       if (!task_continuation_queue_.empty()) {
         task = task_continuation_queue_.front();
         task_continuation_queue_.pop();
