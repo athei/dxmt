@@ -138,8 +138,10 @@ struct SO_DRAW_RECORD {
 constexpr uint32_t kStripCutsBlock = 1024;
 
 /* The blocks the scan takes: one GPU thread carries them over, and its time
-   grows with their number. The emulated stream output numbers the primitives
-   past them plainly when the scan saw no cut, and leaves them out otherwise. */
+   grows with their number. Past them, the geometry pipeline takes the cuts of
+   a primitive's own block alone. The emulated stream output numbers the
+   primitives past them plainly when the scan saw no cut, and leaves them out
+   otherwise. */
 constexpr uint32_t kStripCutsMaxBlocks = 2048;
 
 /* What a draw of an indexed strip passes to the vertex functions of the strip
@@ -829,6 +831,18 @@ public:
       AllocatedTempBufferSlice const *dispatch, uint64_t arguments
   );
   void writeGeometryStreamOutput(const GeometryStreamOutputDraw &draw, uint64_t argument_offset);
+
+  /* Before a draw of an indexed triangle strip through the geometry
+     pipeline: binds the cuts its object function reads at
+     SM50_BINDING_INDEX_STRIP_CUTS. A draw of more than one block, and an
+     indirect one, first runs the strip cut scan. argument_offset is where the
+     draw has sizeof(STRIP_CUTS_TASK) bytes of the encoder's argument buffer.
+     An indirect draw passes its arguments buffer and the GPU address of its
+     arguments, a direct one null and its index count and start index. */
+  void encodeGeometryStripCuts(
+      uint64_t argument_offset, uint32_t index_buffer_offset, uint32_t index_size, uint32_t count, uint32_t start,
+      Buffer *arguments, uint64_t arguments_address
+  );
 
   /* The pipeline of the pass that counts, of the geometry pipeline set last */
   WMT::RenderPipelineState so_geometry_count_pso = {};

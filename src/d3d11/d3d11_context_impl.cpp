@@ -1932,6 +1932,9 @@ public:
     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
     auto draw_arguments_offset = PreAllocateArgumentBuffer(sizeof(DXMT_DRAW_INDEXED_ARGUMENTS), 32);
     auto max_object_threadgroups = max_object_threadgroups_;
+    bool StripCuts = state_.InputAssembler.Topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    auto strip_cuts_offset = StripCuts ? PreAllocateArgumentBuffer(sizeof(STRIP_CUTS_TASK), 32) : 0;
+    uint32_t IndexSize = state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? 4 : 2;
     EmitGeometryDraw([=, topo = state_.InputAssembler.Topology](
                          ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
                      ) {
@@ -1954,6 +1957,10 @@ public:
 
       enc.bumpVisibilityResultOffset();
       enc.resolveRenderPassBarrier();
+      if (StripCuts)
+        enc.encodeGeometryStripCuts(
+            strip_cuts_offset, IndexBufferOffset, IndexSize, IndexCountPerInstance, StartIndexLocation, nullptr, 0
+        );
       auto encode = [&, buffer = index_buffer, offset = IndexBufferOffset + index_sub_offset,
                      per_warp = vertex_per_warp]() {
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed>();
@@ -2108,8 +2115,11 @@ public:
   ) {
     auto IndexBufferOffset = state_.InputAssembler.IndexBufferOffset;
     auto max_object_threadgroups = max_object_threadgroups_;
+    bool StripCuts = state_.InputAssembler.Topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    uint32_t IndexSize = state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT ? 4 : 2;
 
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
+      auto strip_cuts_offset = StripCuts ? PreAllocateArgumentBuffer(sizeof(STRIP_CUTS_TASK), 32) : 0;
       EmitGeometryDraw([=, topo = state_.InputAssembler.Topology, ArgBuffer = bindable->buffer()](
                            ArgumentEncodingContext &enc, const GeometryStreamOutputDraw *so, uint64_t so_offset
                        ) {
@@ -2128,6 +2138,11 @@ public:
           GeometryIndirectThreadgroups(max_object_threadgroups, so)
         );
         enc.resolveRenderPassBarrier();
+        if (StripCuts)
+          enc.encodeGeometryStripCuts(
+              strip_cuts_offset, IndexBufferOffset, IndexSize, 0, 0, ArgBuffer.ptr(),
+              buffer->gpuAddress() + buffer_offset + AlignedByteOffsetForArgs
+          );
         auto encode = [&, args = buffer->buffer(), args_offset = AlignedByteOffsetForArgs + buffer_offset,
                        per_warp = vertex_per_warp, ib = index_buffer, ib_offset = IndexBufferOffset + index_sub_offset]() {
           auto &cmd = enc.encodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed_indirect>();

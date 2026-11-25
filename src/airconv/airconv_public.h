@@ -5,7 +5,7 @@
 #ifndef __AIRCONV_H
 #define __AIRCONV_H
 
-#define AIRCONV_VERSION 26
+#define AIRCONV_VERSION 27
 
 #ifdef __cplusplus
 #include <string>
@@ -33,6 +33,11 @@ enum SM50_BINDING_INDEX: uint32_t {
   SM50_BINDING_INDEX_ARGUMENT_TABLE2 = 7,
   /* float4 (constant bias, slope scale, clamp, unused) of the pixel shader depth bias */
   SM50_BINDING_INDEX_DEPTH_BIAS = 8,
+  /* uint of the object function of an indexed triangle strip through a
+     geometry shader: the scratch buffer of STRIP_CUTS_TASK in
+     src/dxmt/dxmt_context.hpp, the carried blocks and the last cut before
+     each block */
+  SM50_BINDING_INDEX_STRIP_CUTS = 9,
 
   SM50_BINDING_INDEX_ROOT_ARGUMENTS = 0,
   SM50_BINDING_INDEX_STATIC_SAMPLERS = 1,

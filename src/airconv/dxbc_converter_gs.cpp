@@ -16,6 +16,14 @@ namespace dxmt::dxbc {
 
 using namespace microsoft;
 
+/* The payload the object function of a geometry shader passes to the mesh
+   function, in ints: the instance, the valid primitive mask, the warp, the
+   object threadgroups of a pipeline that streams out, the odd winding mask of
+   a triangle strip, then from kPayloadVertices on the output registers of each
+   vertex */
+constexpr uint32_t kPayloadWinding = 4;
+constexpr uint32_t kPayloadVertices = 8;
+
 std::tuple<uint32_t, uint32_t, uint32_t>
 get_vertex_primitive_count_in_warp(D3D10_SB_PRIMITIVE primitive, bool strip) {
   switch (primitive) {
@@ -438,7 +446,7 @@ convert_dxbc_geometry_shader(
   builder.SetInsertPoint(active_);
 
   auto vertices_ptr = builder.CreateBitCast(
-      builder.CreateConstInBoundsGEP1_32(types._int, function->getArg(payload_idx), 4),
+      builder.CreateConstInBoundsGEP1_32(types._int, function->getArg(payload_idx), kPayloadVertices),
       types._int4->getPointerTo((uint32_t)air::AddressSpace::object_data)
   );
 
@@ -470,11 +478,14 @@ convert_dxbc_geometry_shader(
       primitive 0: {0, 1, 2}
       primitive 1: {1, 3, 2}
       ...
-      primitive n: {n, n + 1 + (n & 1), n + 2 - (n & 1)}
+      primitive n: {n, n + 1 + odd, n + 2 - odd}
 
-      I know primitive restart can be broken! just assume the 1st triangle of the thunk is at correct winding
+      odd is n & 1 counted from the first triangle of n's strip, which starts
+      after a cut index; the object function passes it for each n
       */
-      auto odd_bit = builder.CreateAnd(leading_vertex_index, builder.getInt32(1));
+      auto winding =
+          builder.CreateLoad(types._int, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadWinding));
+      auto odd_bit = builder.CreateAnd(builder.CreateLShr(winding, leading_vertex_index), builder.getInt32(1));
       load_vertex(leading_vertex_index, 0);
       load_vertex(builder.CreateAdd(builder.CreateAdd(leading_vertex_index, builder.getInt32(1)), odd_bit), 1);
       load_vertex(builder.CreateSub(builder.CreateAdd(leading_vertex_index, builder.getInt32(2)), odd_bit), 2);
@@ -622,8 +633,14 @@ convert_dxbc_vertex_for_geometry_shader(
   args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   bool is_triadj_strip = is_strip && pGeometryStage->gs_input_primitive == D3D10_SB_PRIMITIVE_TRIANGLE_ADJ;
+  bool is_triangle_strip = is_strip && pGeometryStage->gs_input_primitive == D3D10_SB_PRIMITIVE_TRIANGLE;
   bool is_indexed_draw = ia_layout && ia_layout->index_buffer_format > 0;
   bool is_dyanmic_ib = is_indexed_draw && ia_layout->index_buffer_format == SM50_INDEX_BUFFER_FORMAT_DYNAMIC;
+  // A triangle strip restarts after a cut index, with the winding of a first
+  // triangle. The cuts of the warps before come from the strip cut scan
+  // (STRIP_CUTS_TASK in src/dxmt/dxmt_context.hpp), which takes the indices
+  // in blocks of 1024.
+  bool scan_strip_cuts = is_triangle_strip && is_indexed_draw && !is_dyanmic_ib;
 
   Prologues prologue;
   Epilogues epilogue;
@@ -690,6 +707,19 @@ convert_dxbc_vertex_for_geometry_shader(
         .raster_order_group = {}
     });
   }
+  uint32_t strip_cuts_idx = ~0u;
+  if (scan_strip_cuts) {
+    strip_cuts_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
+        .buffer_size = {},
+        .location_index = SM50_BINDING_INDEX_STRIP_CUTS,
+        .array_size = 0,
+        .memory_access = air::MemoryAccess::read,
+        .address_space = air::AddressSpace::device,
+        .type = air::MSLUint{},
+        .arg_name = "strip_cuts",
+        .raster_order_group = {}
+    });
+  }
 
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, true);
 
@@ -739,7 +769,7 @@ convert_dxbc_vertex_for_geometry_shader(
       get_vertex_primitive_count_in_warp(pGeometryStage->gs_input_primitive, is_strip);
 
   auto payload_output_ptr = builder.CreateConstInBoundsGEP1_32(
-      types._int, payload, 4
+      types._int, payload, kPayloadVertices
   );
 
   resource_map.output.ptr_int4 = builder.CreateBitCast(
@@ -765,6 +795,13 @@ convert_dxbc_vertex_for_geometry_shader(
       module, types._int, false, llvm::GlobalValue::InternalLinkage, llvm::Constant::getNullValue(types._int),
       "valid_vertex_mask", nullptr, llvm::GlobalValue::NotThreadLocal, (uint32_t)air::AddressSpace::threadgroup
   );
+  // The last cut plus 1 between the start of the warp's block and the warp
+  llvm::GlobalVariable *block_last_cut = nullptr;
+  if (scan_strip_cuts)
+    block_last_cut = new llvm::GlobalVariable(
+        module, types._int, false, llvm::GlobalValue::InternalLinkage, llvm::Constant::getNullValue(types._int),
+        "block_last_cut", nullptr, llvm::GlobalValue::NotThreadLocal, (uint32_t)air::AddressSpace::threadgroup
+    );
 
   setup_temp_register(shader_info, resource_map, types, module, builder);
   setup_immediate_constant_buffer(shader_info, resource_map, types, module, builder);
@@ -811,6 +848,47 @@ convert_dxbc_vertex_for_geometry_shader(
 
   // explicit initialization
   air.CreateAtomicRMW(llvm::AtomicRMWInst::BinOp::And, valid_vertex_mask, builder.getInt32(0));
+
+  // The first position of the warp in the draw
+  auto warp_first = builder.CreateMul(warp_id, builder.getInt32(warp_vertex_count));
+  if (scan_strip_cuts) {
+    // The 32 threads of the object threadgroup (get_gs_vertex_count in
+    // src/d3d11/d3d11_context_impl.cpp) scan the positions from the first of
+    // the warp's block to the warp for cut indices, 32 apart
+    air.CreateAtomicRMW(llvm::AtomicRMWInst::BinOp::And, block_last_cut, builder.getInt32(0));
+    auto start_index = builder.CreateExtractValue(draw_arguments, 2);
+    auto index_buffer = function->getArg(index_buffer_idx);
+    auto index_type = llvm::cast<llvm::IntegerType>(index_buffer->getType()->getNonOpaquePointerElementType());
+    auto before = builder.GetInsertBlock();
+    auto loop = llvm::BasicBlock::Create(context, "block_cuts", function);
+    auto body = llvm::BasicBlock::Create(context, "block_cuts_body", function);
+    auto found = llvm::BasicBlock::Create(context, "block_cuts_found", function);
+    auto next = llvm::BasicBlock::Create(context, "block_cuts_next", function);
+    auto done = llvm::BasicBlock::Create(context, "block_cuts_done", function);
+    auto block_first = builder.CreateAnd(warp_first, builder.getInt32(~1023u));
+    auto first_position = builder.CreateAdd(block_first, warp_vertex_id);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(loop);
+    auto position = builder.CreatePHI(types._int, 2);
+    position->addIncoming(first_position, before);
+    builder.CreateCondBr(builder.CreateICmpULT(position, warp_first), body, done);
+    builder.SetInsertPoint(body);
+    auto index = builder.CreateLoad(
+        index_type, builder.CreateGEP(index_type, index_buffer, {builder.CreateAdd(start_index, position)})
+    );
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(index, llvm::ConstantInt::get(index_type, index_type->getBitMask())), found, next
+    );
+    builder.SetInsertPoint(found);
+    air.CreateAtomicRMW(
+        llvm::AtomicRMWInst::BinOp::UMax, block_last_cut, builder.CreateAdd(position, builder.getInt32(1))
+    );
+    builder.CreateBr(next);
+    builder.SetInsertPoint(next);
+    position->addIncoming(builder.CreateAdd(position, builder.getInt32(32)), next);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(done);
+  }
 
   builder.CreateCondBr(
       builder.CreateICmp(llvm::CmpInst::ICMP_ULT, global_index_id, vertex_count), index_check, will_dispatch
@@ -1022,6 +1100,58 @@ convert_dxbc_vertex_for_geometry_shader(
         builder.CreateExtractElement(function->getArg(tg_count_idx), (uint32_t)0),
         builder.CreateConstInBoundsGEP1_32(types._int, payload, 3)
     );
+
+  if (is_triangle_strip) {
+    // Each triangle takes the winding of its place in its strip, which starts
+    // after the last cut before it: one before the warp's block, carried by
+    // the scan, one in the block before the warp, or one in the warp
+    pvalue strip_first = builder.getInt32(0);
+    if (scan_strip_cuts) {
+      auto block = builder.CreateLShr(warp_first, builder.getInt32(10));
+      auto cuts = function->getArg(strip_cuts_idx);
+      auto before = builder.GetInsertBlock();
+      auto carry_blocks = llvm::BasicBlock::Create(context, "strip_cuts_carry_blocks", function);
+      auto carry_read = llvm::BasicBlock::Create(context, "strip_cuts_carry_read", function);
+      auto carried = llvm::BasicBlock::Create(context, "strip_cuts_carried", function);
+      builder.CreateCondBr(builder.CreateICmpNE(block, builder.getInt32(0)), carry_blocks, carried);
+      builder.SetInsertPoint(carry_blocks);
+      auto blocks = builder.CreateLoad(types._int, cuts);
+      builder.CreateCondBr(builder.CreateICmpULT(block, blocks), carry_read, carried);
+      builder.SetInsertPoint(carry_read);
+      auto carry_read_last = builder.CreateLoad(
+          types._int,
+          builder.CreateGEP(
+              types._int, cuts, {builder.CreateAdd(builder.CreateMul(block, builder.getInt32(4)), builder.getInt32(6))}
+          )
+      );
+      builder.CreateBr(carried);
+      builder.SetInsertPoint(carried);
+      auto carry_last = builder.CreatePHI(types._int, 3);
+      carry_last->addIncoming(builder.getInt32(0), before);
+      carry_last->addIncoming(builder.getInt32(0), carry_blocks);
+      carry_last->addIncoming(carry_read_last, carry_read);
+      auto block_last = builder.CreateLoad(types._int, block_last_cut);
+      strip_first = builder.CreateSelect(builder.CreateICmpUGT(carry_last, block_last), carry_last, block_last);
+    }
+    pvalue winding = builder.getInt32(0);
+    for (unsigned primitive_id = 0; primitive_id < warp_primitive_count; primitive_id++) {
+      auto odd = builder.CreateAnd(
+          builder.CreateSub(builder.CreateAdd(warp_first, builder.getInt32(primitive_id)), strip_first),
+          builder.getInt32(1)
+      );
+      winding = builder.CreateOr(winding, builder.CreateShl(odd, builder.getInt32(primitive_id)));
+      if (!is_indexed_draw)
+        continue;
+      // A vertex of the draw left out of the warp is a cut
+      auto cut = builder.CreateICmpEQ(
+          builder.CreateAnd(valid_vertex_result, builder.getInt32(1u << primitive_id)), builder.getInt32(0)
+      );
+      strip_first = builder.CreateSelect(
+          cut, builder.CreateAdd(warp_first, builder.getInt32(primitive_id + 1)), strip_first
+      );
+    }
+    builder.CreateStore(winding, builder.CreateConstInBoundsGEP1_32(types._int, payload, kPayloadWinding));
+  }
 
   air.CreateSetMeshProperties(air.getInt3(warp_primitive_count, pGeometryStage->gs_instance_count, 1));
 

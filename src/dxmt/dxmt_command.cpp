@@ -66,7 +66,7 @@ EmulatedCommandContext::EmulatedCommandContext(WMT::Device device, InternalComma
         std::pair{"so_geometry_prologue", &so_geometry_prologue},
         std::pair{"so_geometry_block_sums", &so_geometry_block_sums},
         std::pair{"so_geometry_block_firsts", &so_geometry_block_firsts},
-        std::pair{"strip_cuts_blocks", &strip_cuts_blocks}}) {
+        std::pair{"strip_cuts_blocks", &strip_cuts_blocks}, std::pair{"strip_cuts_prologue", &strip_cuts_prologue}}) {
     auto function = library.newFunction(name);
     WMTRenderPipelineInfo info;
     WMT::InitializeRenderPipelineInfo(info);

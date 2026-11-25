@@ -639,6 +639,16 @@ strip_cuts_valid(constant DXMTStripCutsTask& task, uint count, uint start) {
   return strip_cuts_scan(task, count, start, 0, count < kStripCutsBlock ? count : kStripCutsBlock, last);
 }
 
+// Between strip_cuts_blocks and a draw through the geometry pipeline, whose
+// object function reads the carries
+[[vertex]] void strip_cuts_prologue(
+    constant DXMTStripCutsTask& task [[buffer(kCustomBufferArgumentIndex0)]]
+) {
+  uint count, start;
+  strip_cuts_draw(task, count, start);
+  strip_cuts_carry(task, count);
+}
+
 struct DXMTStreamOutputCounters {
   ulong written;
   ulong needed;

@@ -171,9 +171,9 @@ public:
   }
 
   /* The pipelines of the vertex functions so_draw_prologue, so_draw_auto,
-     so_geometry_prologue, so_geometry_block_sums, so_geometry_block_firsts
-     and strip_cuts_blocks, each run by a draw of one point, the block
-     functions of a point for each block, with its task at
+     so_geometry_prologue, so_geometry_block_sums, so_geometry_block_firsts,
+     strip_cuts_blocks and strip_cuts_prologue, each run by a draw of one
+     point, the block functions of a point for each block, with its task at
      kCustomBufferArgumentIndex0 */
   WMT::RenderPipelineState
   streamOutputDrawPrologue() {
@@ -203,6 +203,11 @@ public:
   WMT::RenderPipelineState
   stripCutsBlocks() {
     return strip_cuts_blocks;
+  }
+
+  WMT::RenderPipelineState
+  stripCutsPrologue() {
+    return strip_cuts_prologue;
   }
 
 private:
@@ -239,6 +244,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> so_geometry_block_sums;
   WMT::Reference<WMT::RenderPipelineState> so_geometry_block_firsts;
   WMT::Reference<WMT::RenderPipelineState> strip_cuts_blocks;
+  WMT::Reference<WMT::RenderPipelineState> strip_cuts_prologue;
 };
 
 class DepthStencilBlitContext {

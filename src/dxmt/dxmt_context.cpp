@@ -206,6 +206,48 @@ ArgumentEncodingContext::scanStripCuts(
   encodeStreamOutputFunction(emulated_cmd.stripCutsBlocks(), argument_offset, task.blocks);
 }
 
+void
+ArgumentEncodingContext::encodeGeometryStripCuts(
+    uint64_t argument_offset, uint32_t index_buffer_offset, uint32_t index_size, uint32_t count, uint32_t start,
+    Buffer *arguments, uint64_t arguments_address
+) {
+  auto task = getMappedArgumentBuffer<STRIP_CUTS_TASK>(argument_offset);
+  *task = {};
+  AllocatedTempBufferSlice scratch = {};
+  if ((arguments || count > kStripCutsBlock) && ibuf_.ptr()) {
+    auto allocation = ibuf_->current();
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(ibuf_.ptr());
+    if (index_buffer_offset < ibuf_->length()) {
+      task->index_buffer = allocation->gpuAddress() + allocation->currentSuballocationOffset() + index_buffer_offset;
+      task->index_limit = std::min<uint64_t>((ibuf_->length() - index_buffer_offset) / index_size, UINT32_MAX);
+    }
+    task->index_size = index_size;
+    task->count = count;
+    task->start = start;
+    task->window = 3;
+    if (arguments) {
+      task->arguments = arguments_address;
+      makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(arguments);
+    }
+    scanStripCuts(*task, argument_offset, scratch);
+    if (scratch.gpu_buffer)
+      encodeStreamOutputFunction(emulated_cmd.stripCutsPrologue(), argument_offset);
+  }
+  // Without a scan the object function finds 0 blocks carried in the zeroed
+  // task, where it reads them; a draw of one block does not read them
+  auto &cmd = encodeRenderCommand<wmtcmd_render_setbuffer>();
+  cmd.type = WMTRenderCommandSetObjectBuffer;
+  if (scratch.gpu_buffer) {
+    cmd.buffer = scratch.gpu_buffer;
+    cmd.offset = scratch.offset;
+  } else {
+    *task = {};
+    cmd.buffer = getFinalArgumentBuffer();
+    cmd.offset = getFinalArgumentBufferOffset(argument_offset);
+  }
+  cmd.index = SM50_BINDING_INDEX_STRIP_CUTS;
+}
+
 uint64_t
 ArgumentEncodingContext::streamOutputFilledAddress(Buffer *buffer) {
   auto &state = buffer->streamOutput;
