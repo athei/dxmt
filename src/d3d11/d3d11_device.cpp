@@ -188,6 +188,18 @@ public:
     format_inspector_.Inspect(GetMTLDevice());
   }
 
+  ~MTLD3D11DeviceImpl() {
+    // The command queue outlives this device, and its threads encode the
+    // committed chunks with the pipelines and states the device owns, waiting
+    // for their compilation. Commit what is left and wait until the queue has
+    // finished every chunk before they are freed.
+    // During DLL detach at process exit the other threads, the queue's
+    // finish thread among them, are already gone: nothing would signal the
+    // wait, and nothing is left to use what the device frees.
+    if (!this_thread::isInModuleDetachment())
+      context_->WaitUntilGPUIdle();
+  }
+
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) override {
     return container_->QueryInterface(riid, ppvObject);
