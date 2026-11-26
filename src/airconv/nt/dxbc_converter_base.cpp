@@ -1489,6 +1489,8 @@ Converter::operator()(const InstStoreUAVTyped &store) {
 
   if (res.skip_uav_writes)
     return;
+  if (OnlyOnUAVOwner([&] { (*this)(store); }, [] {}))
+    return;
   auto Tex = LoadTexture(store.dst);
   if (!Tex.hasValue())
     return;
@@ -2312,6 +2314,8 @@ Converter::operator()(const InstStoreRaw &store) {
 
   if (res.skip_uav_writes)
     return;
+  if (OnlyOnUAVOwner([&] { (*this)(store); }, [] {}))
+    return;
   auto Buf = LoadBuffer(store.dst);
   if (!Buf)
     return;
@@ -2345,6 +2349,8 @@ Converter::operator()(const InstStoreStructured &store) {
   using namespace llvm::air;
 
   if (res.skip_uav_writes)
+    return;
+  if (OnlyOnUAVOwner([&] { (*this)(store); }, [] {}))
     return;
   auto Buf = LoadBuffer(store.dst);
   if (!Buf)
@@ -2433,6 +2439,8 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
     StoreOperand(atomic.dst_original, ir.getInt32(0));
     return;
   }
+  if (OnlyOnUAVOwner([&] { (*this)(atomic); }, [&] { StoreOperand(atomic.dst_original, ir.getInt32(0)); }))
+    return;
   auto Buf = LoadBuffer(atomic.dst);
 
   if (Buf) {
@@ -2496,6 +2504,8 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
     StoreOperand(atomic.dst, ir.getInt32(0));
     return;
   }
+  if (OnlyOnUAVOwner([&] { (*this)(atomic); }, [&] { StoreOperand(atomic.dst, ir.getInt32(0)); }))
+    return;
   auto Buf = LoadBuffer(atomic.dst_resource);
 
   if (Buf) {
@@ -2560,6 +2570,8 @@ Converter::operator()(const InstAtomicImmIncrement &atomic) {
     StoreOperand(atomic.dst, ir.getInt32(0));
     return;
   }
+  if (OnlyOnUAVOwner([&] { (*this)(atomic); }, [&] { StoreOperand(atomic.dst, ir.getInt32(0)); }))
+    return;
   auto Ctr = LoadCounter(atomic.uav);
   if (!Ctr)
     return;
@@ -2576,6 +2588,8 @@ Converter::operator()(const InstAtomicImmDecrement &atomic) {
     StoreOperand(atomic.dst, ir.getInt32(0));
     return;
   }
+  if (OnlyOnUAVOwner([&] { (*this)(atomic); }, [&] { StoreOperand(atomic.dst, ir.getInt32(0)); }))
+    return;
   auto Ctr = LoadCounter(atomic.uav);
   if (!Ctr)
     return;
@@ -2675,6 +2689,29 @@ void
 Converter::operator()(const InstCut &cut) {
   res.emit_stream = cut.stream;
   res.call_cut();
+}
+
+bool
+Converter::OnlyOnUAVOwner(const std::function<void()> &Convert, const std::function<void()> &Skipped) {
+  auto Owner = res.uav_owner;
+  if (!Owner)
+    return false;
+  auto &Context = ir.getContext();
+  auto Function = ir.GetInsertBlock()->getParent();
+  auto OwnerBB = llvm::BasicBlock::Create(Context, "uav_owner", Function);
+  auto SkippedBB = llvm::BasicBlock::Create(Context, "uav_skipped", Function);
+  auto DoneBB = llvm::BasicBlock::Create(Context, "uav_done", Function);
+  ir.CreateCondBr(Owner, OwnerBB, SkippedBB);
+  ir.SetInsertPoint(OwnerBB);
+  res.uav_owner = nullptr;
+  Convert();
+  res.uav_owner = Owner;
+  ir.CreateBr(DoneBB);
+  ir.SetInsertPoint(SkippedBB);
+  Skipped();
+  ir.CreateBr(DoneBB);
+  ir.SetInsertPoint(DoneBB);
+  return true;
 }
 
 llvm::Value *

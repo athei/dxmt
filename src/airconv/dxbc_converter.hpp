@@ -205,6 +205,10 @@ struct io_binding_map {
      streams out, in the vertex and the geometry shader, so that they run
      once, in the pass that writes */
   bool skip_uav_writes = false;
+  /* i1 of the vertex function of the geometry pipeline: the thread owns its
+     vertex. UAV stores and atomics run only where it is true, and an atomic
+     returns 0 elsewhere; null runs them everywhere */
+  llvm::Value *uav_owner = nullptr;
   /* i1 of the vertex function of the emulated stream output: the vertex
      belongs to a primitive of an indexed strip with a cut index, which is
      neither written nor rasterized */

@@ -28,6 +28,7 @@
 #include "air_builder.hpp"
 #include "tl/generator.hpp"
 #include "ftl.hpp"
+#include <functional>
 
 namespace dxmt::dxbc {
 
@@ -518,6 +519,11 @@ public:
   bool SupportsNonExecutionBarrier() const;
 
 private:
+  /* With res.uav_owner, runs <Convert>, which converts a UAV store or atomic
+     again, where it is true and <Skipped> where it is false, and returns
+     true; without it returns false and runs neither */
+  bool OnlyOnUAVOwner(const std::function<void()> &Convert, const std::function<void()> &Skipped);
+
   llvm::air::AIRBuilder &air;
   llvm::IRBuilderBase &ir;
 

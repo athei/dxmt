@@ -823,6 +823,32 @@ convert_dxbc_vertex_for_geometry_shader(
   auto global_index_id =
       builder.CreateAdd(builder.CreateMul(warp_id, builder.getInt32(warp_vertex_count)), warp_vertex_id);
 
+  // The 32 threads of a strip's object threadgroup (get_gs_vertex_count in
+  // src/d3d11/d3d11_context_impl.cpp) shade more vertices than it advances,
+  // which the next threadgroup shades again. The UAV stores and atomics of
+  // such a vertex run only on the thread that owns it: threads 0 to
+  // warp_vertex_count - 1, and for a triangle strip with adjacency threads 2
+  // to 29 at the position they read, and threads 0 and 31 (positions 0 and
+  // 1) of the first threadgroup.
+  if (is_strip && !resource_map.skip_uav_writes && !pShaderInternal->dxil && !shader_info->uavMap.empty()) {
+    if (is_triadj_strip) {
+      auto inner = builder.CreateAnd(
+          builder.CreateICmpULT(builder.CreateSub(warp_vertex_id, builder.getInt32(2)), builder.getInt32(28)),
+          builder.CreateICmpULT(global_index_id, vertex_count)
+      );
+      auto first = builder.CreateAnd(
+          builder.CreateICmpEQ(warp_id, builder.getInt32(0)),
+          builder.CreateOr(
+              builder.CreateICmpEQ(warp_vertex_id, builder.getInt32(0)),
+              builder.CreateICmpEQ(warp_vertex_id, builder.getInt32(31))
+          )
+      );
+      resource_map.uav_owner = builder.CreateOr(inner, first);
+    } else {
+      resource_map.uav_owner = builder.CreateICmpULT(warp_vertex_id, builder.getInt32(warp_vertex_count));
+    }
+  }
+
   if (is_triadj_strip) {
     // 2nd and 32th vertex are not read but 33th and -2th (or 1st) are.
     auto const one_const = builder.getInt32(1);
