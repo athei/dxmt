@@ -16,9 +16,10 @@ static constexpr uint32_t kGeometryStreamOutput = 1;
 
 /* Salt of the other geometry pipeline variants whose code our series
    changes: those without stream output of a geometry shader that declares a
-   stream other than 0, and those of a vertex shader with UAVs for a strip
-   topology. It enters only their keys, so that the cached variants of every
-   other shader stay valid; raise it as kGeometryStreamOutput. */
+   stream other than 0, those of a vertex shader with UAVs for a strip
+   topology, and the vertex variants of a triangle strip with adjacency. It
+   enters only their keys, so that the cached variants of every other shader
+   stay valid; raise it as kGeometryStreamOutput. */
 static constexpr uint32_t kGeometryOwnVariants = 1;
 
 SM50_SHADER_FLAG
@@ -418,9 +419,12 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   }
   // The threads that shade a strip's vertex a second time leave out its UAV
   // stores and atomics, except in the count pass, which leaves them out
-  // everywhere
-  if (variant.strip_topology && shader->reflection().UAVSlotMask &&
-      !(variant.stream_output && variant.stream_output_pass == SM50_GEOMETRY_STREAM_OUTPUT_COUNT))
+  // everywhere. A triangle strip with adjacency (input primitive 7) leaves
+  // out the triangles past its end
+  if (variant.strip_topology &&
+      ((shader->reflection().UAVSlotMask &&
+        !(variant.stream_output && variant.stream_output_pass == SM50_GEOMETRY_STREAM_OUTPUT_COUNT)) ||
+       variant.geometry_shader_handle->reflection().GeometryShader.Primitive == 7))
     h.update(kGeometryOwnVariants);
   auto variant_digest = h.final();
   std::string func_name = "vsgs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();

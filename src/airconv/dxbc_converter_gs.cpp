@@ -1063,6 +1063,15 @@ convert_dxbc_vertex_for_geometry_shader(
 
   pvalue valid_primitive_mask = builder.getInt32(0);
   auto valid_vertex_result = builder.CreateLoad(types._int, valid_vertex_mask);
+  // The threads past the end of a triangle strip with adjacency read its last
+  // vertex, so the vertices of the triangles past its end are valid too: of n
+  // vertices it has n / 2 - 2 triangles, the first of them warp_first / 2
+  pvalue triadj_strip_triangles = nullptr;
+  if (is_triadj_strip)
+    triadj_strip_triangles = builder.CreateSub(
+        builder.CreateSub(builder.CreateLShr(vertex_count, builder.getInt32(1)), builder.getInt32(2)),
+        builder.CreateMul(warp_id, builder.getInt32(warp_primitive_count))
+    );
 
   for (unsigned primitive_id = 0; primitive_id < warp_primitive_count; primitive_id++) {
     pvalue primitive_valid_result = builder.getInt1(1);
@@ -1108,6 +1117,10 @@ convert_dxbc_vertex_for_geometry_shader(
         builder.CreateAnd(builder.getInt32(primitive_vertices_mask), valid_vertex_result),
         builder.getInt32(primitive_vertices_mask)
     );
+    if (triadj_strip_triangles)
+      primitive_valid_result = builder.CreateAnd(
+          primitive_valid_result, builder.CreateICmpSLT(builder.getInt32(primitive_id), triadj_strip_triangles)
+      );
 
     valid_primitive_mask = builder.CreateOr(
         valid_primitive_mask,
