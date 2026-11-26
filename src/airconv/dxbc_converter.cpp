@@ -894,25 +894,100 @@ llvm::Error convertDXBC(
 };
 } // namespace dxmt::dxbc
 
-bool CheckGSBBIsPassThrough(dxmt::dxbc::BasicBlock *bb) {
+/* Whether mov writes outputs of the vertex being emitted unchanged from the
+   same register of input vertex <vertex> */
+static bool
+IsGSPassThroughMov(const dxmt::dxbc::InstMov &mov, uint32_t vertex) {
   using namespace dxmt::dxbc;
-  if (bb->instructions.any(patterns{
-        [](InstNop &) { return false; }, [](InstMov &mov) { return false; },
-        [](InstEmit &) { return false; }, [](InstCut &) { return false; },
-        [](auto &) { return true; }
-      }))
+  auto dst = std::get_if<DstOperandOutput>(&mov.dst);
+  auto src = std::get_if<SrcOperandInputICP>(&mov.src);
+  if (mov._.saturate || !dst || !src || src->_.abs || src->_.neg)
+    return false;
+  auto cpid = std::get_if<uint32_t>(&src->cpid);
+  auto regid = std::get_if<uint32_t>(&src->regid);
+  if (!cpid || !regid || *cpid != vertex || *regid != dst->regid)
+    return false;
+  std::array<int, 4> swizzle = src->_.swizzle;
+  for (int c = 0; c < 4; c++) {
+    if ((dst->_.mask & (1 << c)) && swizzle[c] != c)
+      return false;
+  }
+  return true;
+}
+
+/* Whether the geometry shader emits each input primitive as it is, so that
+   the pipeline without a geometry stage draws what it draws: once, with each
+   vertex in order, each vertex writing the same output components as the
+   first, each moved unchanged from the same register of that input vertex */
+static bool
+CheckGSBBIsPassThrough(dxmt::dxbc::SM50ShaderInternal *shader) {
+  using namespace dxmt::dxbc;
+  using namespace microsoft;
+  uint32_t vertex_count;
+  D3D10_SB_PRIMITIVE_TOPOLOGY topology;
+  switch (shader->gs_input_primitive) {
+  case D3D10_SB_PRIMITIVE_POINT:
+    vertex_count = 1;
+    topology = D3D10_SB_PRIMITIVE_TOPOLOGY_POINTLIST;
+    break;
+  case D3D10_SB_PRIMITIVE_LINE:
+    vertex_count = 2;
+    topology = D3D10_SB_PRIMITIVE_TOPOLOGY_LINESTRIP;
+    break;
+  case D3D10_SB_PRIMITIVE_TRIANGLE:
+    vertex_count = 3;
+    topology = D3D10_SB_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    break;
+  default:
+    return false;
+  }
+  if (shader->gs_output_topology != topology || shader->gs_max_vertex_output < vertex_count ||
+      shader->gs_instance_count != 1)
     return false;
 
-  return std::visit(
-    patterns{
-      [](dxmt::dxbc::BasicBlockReturn) { return true; },
-      [](dxmt::dxbc::BasicBlockUnconditionalBranch uncond) {
-        return CheckGSBBIsPassThrough(uncond.target);
-      },
-      [](auto) { return false; }
-    },
-    bb->target
-  );
+  uint32_t emitted = 0;
+  // The components of each output register the vertex being emitted writes,
+  // and those the first vertex wrote: outputs are undefined after an emit
+  std::array<uint8_t, 32> written = {}, first_written = {};
+  BasicBlock *bb = shader->entry();
+  // Blocks that branch back to each other do not end
+  for (size_t blocks = 0; blocks < shader->bbs.size(); blocks++) {
+    // The visitor returns true for an instruction that is not part of a
+    // pass-through
+    if (bb->instructions.any(patterns{
+            [](const InstNop &) { return false; },
+            [&](const InstMov &mov) {
+              if (emitted == vertex_count || !IsGSPassThroughMov(mov, emitted))
+                return true;
+              auto &dst = std::get<DstOperandOutput>(mov.dst);
+              if (dst.regid >= written.size())
+                return true;
+              written[dst.regid] |= dst._.mask;
+              return false;
+            },
+            [&](const InstEmit &emit) {
+              if (emit.stream != 0 || emitted == vertex_count)
+                return true;
+              if (emitted == 0)
+                first_written = written;
+              else if (written != first_written)
+                return true;
+              written = {};
+              emitted++;
+              return false;
+            },
+            [&](const InstCut &cut) { return cut.stream != 0 || emitted != vertex_count; },
+            [](const auto &) { return true; }
+        }))
+      return false;
+    if (std::holds_alternative<BasicBlockReturn>(bb->target))
+      return emitted == vertex_count;
+    auto branch = std::get_if<BasicBlockUnconditionalBranch>(&bb->target);
+    if (!branch)
+      return false;
+    bb = branch->target;
+  }
+  return false;
 }
 
 bool CheckGSSignatureIsPassThrough(
@@ -921,9 +996,12 @@ bool CheckGSSignatureIsPassThrough(
 ) {
   using namespace microsoft;
 
-  data.RenderTargetArrayIndexComponent = 255;
+  // Register 255 is an index the shader does not pass through. The components
+  // stay 0, so that a shader that passes neither through does not give
+  // GSPassThrough the value ~0u, which stands for no pass-through.
+  data.RenderTargetArrayIndexComponent = 0;
   data.RenderTargetArrayIndexReg = 255;
-  data.ViewportArrayIndexComponent = 255;
+  data.ViewportArrayIndexComponent = 0;
   data.ViewportArrayIndexReg = 255;
 
   if (output.NumStreams() > 1) {
@@ -942,6 +1020,22 @@ bool CheckGSSignatureIsPassThrough(
   if (num_output > num_input) {
     // at least it is a non-trivial shader that generates new data
     return false;
+  }
+  // The stage before writes its position, clip and cull distances for the
+  // pipeline without a geometry stage too, so a shader that drops one is not
+  // a pass-through
+  for (unsigned j = 0; j < num_input; j++) {
+    const D3D11_SIGNATURE_PARAMETER &in = input_parameters[j];
+    if (in.SystemValue != D3D10_SB_NAME_POSITION && in.SystemValue != D3D10_SB_NAME_CLIP_DISTANCE &&
+        in.SystemValue != D3D10_SB_NAME_CULL_DISTANCE)
+      continue;
+    bool kept = false;
+    for (unsigned i = 0; i < num_output && !kept; i++) {
+      const D3D11_SIGNATURE_PARAMETER &out = output_parameters[i];
+      kept = out.Register == in.Register && out.Mask == in.Mask && out.SystemValue == in.SystemValue;
+    }
+    if (!kept)
+      return false;
   }
   bool has_match_record;
   for (unsigned i = 0; i < num_output; i++) {
@@ -1292,7 +1386,7 @@ AIRCONV_API int SM50Initialize(
     if (sm50_shader->shader_type == microsoft::D3D10_SB_GEOMETRY_SHADER) {
       if (binding_cbuffer_mask || binding_sampler_mask || binding_uav_mask || binding_srv_hi_mask ||
           binding_srv_lo_mask ||
-          !(CheckGSBBIsPassThrough(sm50_shader->entry()) &&
+          !(CheckGSBBIsPassThrough(sm50_shader.get()) &&
             CheckGSSignatureIsPassThrough(inputParser, outputParser, pRefl->GeometryShader.Data))) {
         pRefl->GeometryShader.GSPassThrough = ~0u;
       }
