@@ -302,7 +302,11 @@ public:
         RestoreWindow(hWnd, window_state_);
     }
 
-    device_context_->WaitUntilGPUIdle();
+    // During DLL detach at process exit the command queue's threads are
+    // already gone, so nothing would signal the wait, and nothing is left to
+    // present into the view
+    if (!this_thread::isInModuleDetachment())
+      device_context_->WaitUntilGPUIdle();
     WMT::ReleaseMetalView(native_view_);
     native_view_ = {};
     CloseHandle(present_semaphore_);
