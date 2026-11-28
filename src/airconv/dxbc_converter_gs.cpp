@@ -539,7 +539,9 @@ convert_dxbc_geometry_shader(
       auto _2np3 = builder.CreateAdd(_2n, builder.getInt32(3));
       auto _2nm2 = builder.CreateSub(_2n, two_const);
       auto is_odd = builder.CreateICmpEQ(odd_bit, one_const);
-      load_vertex(builder.CreateURem(builder.CreateSelect(is_odd, _2np3, _2nm2), builder.getInt32(33)), 1);
+      // 2n - 2 + 33, so that -2 of the first triangle is slot 31
+      auto _2np31 = builder.CreateAdd(_2n, builder.getInt32(31));
+      load_vertex(builder.CreateURem(builder.CreateSelect(is_odd, _2np3, _2np31), builder.getInt32(33)), 1);
       load_vertex(builder.CreateURem(builder.CreateAdd(_2n, builder.getInt32(6)), builder.getInt32(31)), 3);
       load_vertex(builder.CreateSelect(is_odd, _2nm2, _2np3), 5);
       break;
@@ -1106,7 +1108,7 @@ convert_dxbc_vertex_for_geometry_shader(
         primitive_vertices_mask |= 1 << 2 * primitive_id;
         primitive_vertices_mask |= 1 << 2 * (primitive_id + 1 + odd_primitive);
         primitive_vertices_mask |= 1 << 2 * (primitive_id + 2 - odd_primitive);
-        primitive_vertices_mask |= 1 << ((odd_primitive ? _2n + 3 : _2n - 2) % 33);
+        primitive_vertices_mask |= 1u << ((odd_primitive ? _2n + 3 : _2n + 31) % 33);
         primitive_vertices_mask |= 1 << ((6 + 2 * primitive_id) % 31);
         primitive_vertices_mask |= 1 << (odd_primitive ? _2n - 2 : _2n + 3);
         break;

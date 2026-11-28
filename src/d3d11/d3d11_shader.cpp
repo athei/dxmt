@@ -17,9 +17,9 @@ static constexpr uint32_t kGeometryStreamOutput = 1;
 /* Salt of the other geometry pipeline variants whose code our series
    changes: those without stream output of a geometry shader that declares a
    stream other than 0, those of a vertex shader with UAVs for a strip
-   topology, and the vertex variants of a triangle strip with adjacency. It
-   enters only their keys, so that the cached variants of every other shader
-   stay valid; raise it as kGeometryStreamOutput. */
+   topology, and the vertex and geometry variants of a triangle strip with
+   adjacency. It enters only their keys, so that the cached variants of every
+   other shader stay valid; raise it as kGeometryStreamOutput. */
 static constexpr uint32_t kGeometryOwnVariants = 2;
 
 SM50_SHADER_FLAG
@@ -487,6 +487,10 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     // Without stream output only stream 0 is drawn
     h.update(kGeometryOwnVariants);
   }
+  // A triangle strip with adjacency (input primitive 7) reads input[1] of
+  // each threadgroup's first triangle from slot 31
+  if (variant.strip_topology && shader->reflection().GeometryShader.Primitive == 7)
+    h.update(kGeometryOwnVariants);
   auto variant_digest = h.final();
   std::string func_name = "gs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
