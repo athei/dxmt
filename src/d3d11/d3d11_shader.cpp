@@ -20,7 +20,7 @@ static constexpr uint32_t kGeometryStreamOutput = 1;
    topology, and the vertex variants of a triangle strip with adjacency. It
    enters only their keys, so that the cached variants of every other shader
    stay valid; raise it as kGeometryStreamOutput. */
-static constexpr uint32_t kGeometryOwnVariants = 1;
+static constexpr uint32_t kGeometryOwnVariants = 2;
 
 SM50_SHADER_FLAG
 getGlobalShaderFlag() {

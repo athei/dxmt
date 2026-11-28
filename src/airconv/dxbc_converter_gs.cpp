@@ -823,6 +823,12 @@ convert_dxbc_vertex_for_geometry_shader(
   auto global_index_id =
       builder.CreateAdd(builder.CreateMul(warp_id, builder.getInt32(warp_vertex_count)), warp_vertex_id);
 
+  // A triangle strip with adjacency ignores the final vertex of an odd count,
+  // so its last triangle takes the vertex before that as input[3]
+  pvalue triadj_vertex_count = nullptr;
+  if (is_triadj_strip)
+    triadj_vertex_count = builder.CreateAnd(vertex_count, builder.getInt32(~1u));
+
   // The 32 threads of a strip's object threadgroup (get_gs_vertex_count in
   // src/d3d11/d3d11_context_impl.cpp) shade more vertices than it advances,
   // which the next threadgroup shades again. The UAV stores and atomics of
@@ -834,7 +840,7 @@ convert_dxbc_vertex_for_geometry_shader(
     if (is_triadj_strip) {
       auto inner = builder.CreateAnd(
           builder.CreateICmpULT(builder.CreateSub(warp_vertex_id, builder.getInt32(2)), builder.getInt32(28)),
-          builder.CreateICmpULT(global_index_id, vertex_count)
+          builder.CreateICmpULT(global_index_id, triadj_vertex_count)
       );
       auto first = builder.CreateAnd(
           builder.CreateICmpEQ(warp_id, builder.getInt32(0)),
@@ -868,7 +874,10 @@ convert_dxbc_vertex_for_geometry_shader(
     global_index_id = builder.CreateSelect(
       is_last_thread,
       signed_max(one_const, builder.CreateSub(global_index_id, builder.getInt32(33))),
-      signed_min(global_index_id, builder.CreateSub(vertex_count, one_const)) // may degenerate
+      signed_min(
+          global_index_id,
+          signed_max(builder.getInt32(0), builder.CreateSub(triadj_vertex_count, one_const))
+      ) // may degenerate
     );
   }
 
